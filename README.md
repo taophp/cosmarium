@@ -65,7 +65,14 @@ Inspired by the best development (Zed, VS Code) and writing tools (FocusWriter, 
 - [ ] Multi-device sync (optional)
 - [ ] Advanced accessibility (themes, keyboard navigation, etc.)
 
-### v0.6.x – Character AI Conversations
+### v0.6.x – Multiple AI Personalities
+- [ ] Selectable AI personalities for conversation panel (editor, critic, coach, fan, skeptic, etc.)
+- [ ] Predefined personality templates (genre experts, reader profiles, professional roles)
+- [ ] Customizable personality creation and parameters
+- [ ] Conversation history per personality
+- [ ] Reference author personalities ("What would Tolkien/King/Atwood do?")
+
+### v0.7.x – Character AI Conversations
 - [ ] Chat panel for conversations with entities/characters
 - [ ] AI personality system based on entity traits
 - [ ] Conversation memory per character
