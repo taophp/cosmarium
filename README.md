@@ -23,6 +23,7 @@ Inspired by the best development (Zed, VS Code) and writing tools (FocusWriter, 
 - **Project = compressed file or structured folder** (user choice).
 - **Export**: Markdown, PDF, TXT, HTML, Word, LaTeX.
 - **Advanced statistics**: quantity, quality, style analysis, word frequency, sentence length, etc.
+- **Hemingway-style analysis**: readability grade, difficult sentences detection, weakener words, complex word alternatives.
 - **Writing goals**: progress tracking, notifications, history.
 - **Immersive mode**: configurable panels, AI-generated soundscape, dynamic graphic backgrounds.
 - **Conversational AI panel**: discuss your story, unlock inspiration, structure your plot.
@@ -34,56 +35,52 @@ Inspired by the best development (Zed, VS Code) and writing tools (FocusWriter, 
 
 ## 🗺️ Roadmap
 
-### v0.1.x – Minimal Prototype
-- [ ] Fast central markdown editor, project save/load (compressed file or folder)
-- [ ] Basic panels: notes, entities (manual), timeline (manual)
-- [ ] Export to Markdown, TXT, PDF
-- [ ] Rudimentary plugin architecture
+### v0.1.0 – MVP (Vital Features)
+- [ ] Fast central markdown editor with immersive writing mode
+- [ ] Modular panel architecture (add/remove, resize, shortcuts)
+- [ ] Project management (create/open/save compressed file or folder)
+- [ ] Basic panels: notes, manual entities, outliner/project tree
+- [ ] Export to PDF, Markdown, TXT
+- [ ] Simple writing goals (word count targets, progress tracking)
+- [ ] Basic plugin architecture foundation
 
-### v0.2.x – Modularity & Ergonomics
-- [ ] Dynamic panel management (add/remove, resize, shortcuts)
-- [ ] Markdown preview
-- [ ] Simple writing goals
-- [ ] Basic quantitative statistics
-- [ ] First MuseTag integration tests (entity structure ready)
+### v0.2.x – Differentiation (What Makes Cosmarium Unique)
+- [ ] MuseTag integration preparation (entity structure, timeline support)
+- [ ] AI soundscape generation (SoundVault/freesound-rs integration)
+- [ ] AI graphic generation for entities/places (backgrounds, character portraits)
+- [ ] Dynamic visual adaptation based on content being written
 
-### v0.3.x – Versioning & Narrative Structure
+### v0.3.x – Innovation (Original Implementation)
+- [ ] Conversational AI panel (writing assistant)
+- [ ] Multiple AI personalities (editor, critic, coach, fan, skeptic, etc.)
+- [ ] Reference author personalities ("What would Tolkien/King/Atwood do?")
+- [ ] Character AI conversations (chat with your story entities)
+- [ ] Multi-character "round table" discussions
+
+### v0.4.x – Standard Features (Expected Functionality)
+- [ ] Advanced statistics (quantitative and qualitative analysis)
+- [ ] Hemingway-inspired style analysis (readability, difficult sentences, weakeners)
+- [ ] Write/Edit/Feedback modes with visual highlighting
 - [ ] Integrated versioning/branching (git-like, graphical interface)
-- [ ] Outliner/project tree
 - [ ] Export to HTML, Word, LaTeX
 - [ ] Import from existing projects (Markdown, Manuskript, Scrivener)
 
-### v0.4.x – AI & Advanced Analysis
-- [ ] Conversational AI panel (writing assistant)
-- [ ] Qualitative statistics (style analysis, frequency, readability)
-- [ ] AI soundscape generation (SoundVault/freesound-rs integration)
-- [ ] AI graphic generation for entities/places
+### v0.5.x – Professional Features
+- [ ] Narrative templates and story structure assistants (Snowflake method, etc.)
+- [ ] Advanced writing goals and progress analytics
+- [ ] Multi-device synchronization
+- [ ] Advanced accessibility (themes, keyboard navigation)
 
-### v0.5.x – Collaboration & Community
+### v0.6.x – Collaboration & Community
 - [ ] Real-time collaboration (co-writing, comments, access rights)
-- [ ] Community panels (forums, thematic chat rooms)
-- [ ] Multi-device sync (optional)
-- [ ] Advanced accessibility (themes, keyboard navigation, etc.)
-
-### v0.6.x – Multiple AI Personalities
-- [ ] Selectable AI personalities for conversation panel (editor, critic, coach, fan, skeptic, etc.)
-- [ ] Predefined personality templates (genre experts, reader profiles, professional roles)
-- [ ] Customizable personality creation and parameters
-- [ ] Conversation history per personality
-- [ ] Reference author personalities ("What would Tolkien/King/Atwood do?")
-
-### v0.7.x – Character AI Conversations
-- [ ] Chat panel for conversations with entities/characters
-- [ ] AI personality system based on entity traits
-- [ ] Conversation memory per character
-- [ ] Multi-character "round table" discussions
-- [ ] Export conversations to project notes
+- [ ] Community panels (forums, thematic chat rooms, project sharing)
+- [ ] Collaborative editing and review workflows
 
 ### v1.0.0 – First Stable Release
 - [ ] Complete documentation (user, plugin API)
-- [ ] Standard plugins: Snowflake, MuseTag, narrative analysis, advanced export
+- [ ] Standard plugin library (Snowflake, MuseTag, narrative analysis, advanced export)
 - [ ] Automated tests, CI/CD, multi-platform installers
-- [ ] Community opening (extensions, contributions)
+- [ ] Community ecosystem (extensions marketplace, contributions)
 
 ---
 
