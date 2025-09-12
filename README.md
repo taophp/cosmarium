@@ -65,6 +65,13 @@ Inspired by the best development (Zed, VS Code) and writing tools (FocusWriter, 
 - [ ] Multi-device sync (optional)
 - [ ] Advanced accessibility (themes, keyboard navigation, etc.)
 
+### v0.6.x – Character AI Conversations
+- [ ] Chat panel for conversations with entities/characters
+- [ ] AI personality system based on entity traits
+- [ ] Conversation memory per character
+- [ ] Multi-character "round table" discussions
+- [ ] Export conversations to project notes
+
 ### v1.0.0 – First Stable Release
 - [ ] Complete documentation (user, plugin API)
 - [ ] Standard plugins: Snowflake, MuseTag, narrative analysis, advanced export
