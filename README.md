@@ -36,13 +36,22 @@ Inspired by the best development (Zed, VS Code) and writing tools (FocusWriter, 
 ## 🗺️ Roadmap
 
 ### v0.1.0 – MVP (Vital Features)
-- [ ] Fast central markdown editor with immersive writing mode
-- [ ] Modular panel architecture (add/remove, resize, shortcuts)
+
+**Phase 1: Core Foundation**
 - [ ] Project management (create/open/save compressed file or folder)
-- [ ] Basic panels: notes, manual entities, outliner/project tree
-- [ ] Export to PDF, Markdown, TXT
-- [ ] Simple writing goals (word count targets, progress tracking)
-- [ ] Basic plugin architecture foundation
+- [ ] Fast central markdown editor with GPUI
+- [ ] Panel infrastructure (layout, resize, shortcuts - but empty panels)
+- [ ] Basic immersive writing mode
+
+**Phase 2: Modular Architecture**
+- [ ] Plugin system foundation for panels and features
+- [ ] Plugin: Notes panel
+- [ ] Plugin: Manual entities panel
+- [ ] Plugin: Outliner/project tree panel
+
+**Phase 3: MVP Completion**
+- [ ] Plugin: Export (PDF, Markdown, TXT)
+- [ ] Plugin: Simple writing goals (word count targets, progress tracking)
 
 ### v0.2.x – Differentiation (What Makes Cosmarium Unique)
 - [ ] MuseTag integration preparation (entity structure, timeline support)
