@@ -35,29 +35,45 @@ Inspired by the best development (Zed, VS Code) and writing tools (FocusWriter, 
 
 ## 🗺️ Roadmap
 
-### v0.1.0 – MVP (Vital Features)
+### v0.1.0 – MVP (Miniam Viable Product)
 
 **Phase 1: Core Foundation**
 - [ ] Project management (create/open/save compressed file or folder)
-- [ ] Fast central markdown editor with GPUI
 - [ ] Panel infrastructure (layout, resize, shortcuts - but empty panels)
 - [ ] Basic immersive writing mode
+- For dev:
+  - [ ] Ultra-minimal EGUI core (window, layout manager only)
+  - [ ] Plugin system foundation (registry, loading, API)
+  - [ ] Document abstraction layer
+  - [ ] Plugin: Markdown editor (as first reference plugin)
+  - [ ] Workspace structure (core + plugin-api + plugins crates)
 
 **Phase 2: Modular Architecture**
-- [ ] Plugin system foundation for panels and features
 - [ ] Plugin: Notes panel
 - [ ] Plugin: Manual entities panel
 - [ ] Plugin: Outliner/project tree panel
+- For dev:
+  - [ ] Plugin development kit (macros, helpers)
+  - [ ] Hot-reload during development
+  - [ ] Inter-plugin communication system
+  - [ ] Plugin template/scaffolding
 
 **Phase 3: MVP Completion**
 - [ ] Plugin: Export (PDF, Markdown, TXT)
 - [ ] Plugin: Simple writing goals (word count targets, progress tracking)
+- For dev:
+  - [ ] Plugin API validation with real use cases
+  - [ ] Documentation for plugin development
+  - [ ] CI/CD for plugin ecosystem
 
 ### v0.2.x – Differentiation (What Makes Cosmarium Unique)
 - [ ] MuseTag integration preparation (entity structure, timeline support)
 - [ ] AI soundscape generation (SoundVault/freesound-rs integration)
 - [ ] AI graphic generation for entities/places (backgrounds, character portraits)
 - [ ] Dynamic visual adaptation based on content being written
+- For dev:
+  - [ ] Multi-language plugin support foundation
+  - [ ] Lua plugin support (mlua) - simplest embeddable scripting
 
 ### v0.3.x – Innovation (Original Implementation)
 - [ ] Conversational AI panel (writing assistant)
@@ -65,6 +81,8 @@ Inspired by the best development (Zed, VS Code) and writing tools (FocusWriter, 
 - [ ] Reference author personalities ("What would Tolkien/King/Atwood do?")
 - [ ] Character AI conversations (chat with your story entities)
 - [ ] Multi-character "round table" discussions
+- For dev:
+  - [ ] JavaScript runtime integration (deno_core/rquickjs) - web ecosystem access
 
 ### v0.4.x – Standard Features (Expected Functionality)
 - [ ] Advanced statistics (quantitative and qualitative analysis)
@@ -73,6 +91,8 @@ Inspired by the best development (Zed, VS Code) and writing tools (FocusWriter, 
 - [ ] Integrated versioning/branching (git-like, graphical interface)
 - [ ] Export to HTML, Word, LaTeX
 - [ ] Import from existing projects (Markdown, Manuskript, Scrivener)
+- For dev:
+  - [ ] Python plugin support (PyO3) - AI/ML ecosystem integration
 
 ### v0.5.x – Professional Features
 - [ ] Narrative templates and story structure assistants (Snowflake method, etc.)
@@ -88,8 +108,12 @@ Inspired by the best development (Zed, VS Code) and writing tools (FocusWriter, 
 ### v1.0.0 – First Stable Release
 - [ ] Complete documentation (user, plugin API)
 - [ ] Standard plugin library (Snowflake, MuseTag, narrative analysis, advanced export)
-- [ ] Automated tests, CI/CD, multi-platform installers
 - [ ] Community ecosystem (extensions marketplace, contributions)
+- For dev:
+  - [ ] WASM plugin support (wasmtime)
+  - [ ] Plugin marketplace infrastructure
+  - [ ] Automated tests, CI/CD, multi-platform installers
+  - [ ] Plugin security/sandboxing model
 
 ---
 
