@@ -1,0 +1,25 @@
+[package]
+name = "cosmarium-plugin-api"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Plugin API for Cosmarium creative writing software"
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+egui = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true, features = ["v4", "v5"] }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+
+[features]
+default = []

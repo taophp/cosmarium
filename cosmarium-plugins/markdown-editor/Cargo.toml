@@ -1,0 +1,32 @@
+[package]
+name = "cosmarium-markdown-editor"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Markdown editor plugin for Cosmarium creative writing software"
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+cosmarium-plugin-api = { path = "../../cosmarium-plugin-api" }
+egui = { workspace = true }
+egui_extras = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+pulldown-cmark = { version = "0.9", optional = true }
+syntect = { version = "5.0", optional = true }
+regex = "1.10"
+chrono = { version = "0.4", features = ["serde"] }
+
+[features]
+default = []
+syntax-highlighting = ["syntect"]
+live-preview = ["pulldown-cmark"]
+
+[lib]
+crate-type = ["cdylib", "rlib"]

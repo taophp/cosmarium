@@ -1,0 +1,72 @@
+[workspace]
+resolver = "2"
+members = [
+    "cosmarium-core",
+    "cosmarium-plugin-api",
+    "cosmarium-plugins/markdown-editor",
+    "cosmarium-app"
+]
+
+[workspace.package]
+version = "0.1.0"
+authors = ["Cosmarium Team"]
+license = "MIT OR Apache-2.0"
+edition = "2021"
+repository = "https://github.com/cosmarium/cosmarium"
+homepage = "https://cosmarium.stephanemourey.fr"
+description = "Next-generation creative writing software for fiction authors"
+keywords = ["writing", "creative", "fiction", "editor", "gui"]
+categories = ["text-editors", "multimedia", "development-tools"]
+
+
+[workspace.dependencies]
+# Core dependencies
+eframe = "0.24"
+egui = "0.24"
+egui_extras = "0.24"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.0", features = ["full"] }
+anyhow = "1.0"
+thiserror = "1.0"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+uuid = { version = "1.0", features = ["v4", "serde"] }
+
+# File and project management
+zip = "0.6"
+walkdir = "2.0"
+notify = "6.0"
+dirs = "5.0"
+
+# Plugin system
+libloading = "0.8"
+inventory = "0.3"
+
+# Markdown and text processing
+pulldown-cmark = "0.9"
+syntect = "5.0"
+
+# Configuration
+config = "0.13"
+toml = "0.8"
+
+# Async utilities
+futures = "0.3"
+async-trait = "0.1"
+
+# Time handling
+chrono = { version = "0.4", features = ["serde"] }
+
+[profile.dev]
+opt-level = 1
+debug = true
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+
+[profile.dev.package."*"]
+opt-level = 2
