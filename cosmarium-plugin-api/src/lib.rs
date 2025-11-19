@@ -23,12 +23,12 @@
 //!
 //! impl Plugin for MyPlugin {
 //!     fn info(&self) -> PluginInfo {
-//!         PluginInfo {
-//!             name: "My Plugin".to_string(),
-//!             version: "0.1.0".to_string(),
-//!             description: "A sample plugin".to_string(),
-//!             author: "Plugin Author".to_string(),
-//!         }
+//!         PluginInfo::new(
+//!             "My Plugin",
+//!             "0.1.0",
+//!             "A sample plugin",
+//!             "Plugin Author",
+//!         )
 //!     }
 //!
 //!     fn initialize(&mut self, ctx: &mut PluginContext) -> anyhow::Result<()> {

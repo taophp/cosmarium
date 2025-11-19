@@ -38,6 +38,8 @@ zip = "0.6"
 walkdir = "2.0"
 notify = "6.0"
 dirs = "5.0"
+tempfile = "3.8"
+tokio-test = "0.4"
 
 # Plugin system
 libloading = "0.8"

@@ -28,8 +28,10 @@ tokio = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+rfd = "0.14"
 dirs = { workspace = true }
 clap = { version = "4.0", features = ["derive"] }
+uuid = { workspace = true }
 
 [features]
 default = ["native"]

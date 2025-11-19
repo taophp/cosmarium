@@ -16,9 +16,14 @@
 //! ```rust
 //! use cosmarium_core::{Application, PluginManager};
 //!
+//! # tokio_test::block_on(async {
 //! let mut app = Application::new();
-//! app.plugin_manager().load_plugin("markdown-editor")?;
+//! app.initialize().await?;
+//! let plugin_manager = app.plugin_manager();
+//! let mut manager = plugin_manager.write().await;
+//! manager.load_plugin("markdown-editor").await?;
 //! # Ok::<(), Box<dyn std::error::Error>>(())
+//! # });
 //! ```
 
 pub mod application;
@@ -26,6 +31,7 @@ pub mod config;
 pub mod document;
 pub mod error;
 pub mod events;
+pub mod git;
 pub mod layout;
 pub mod plugin;
 pub mod project;
@@ -70,5 +76,29 @@ mod tests {
     fn test_init_tracing() {
         // Should not panic
         init_tracing();
+    }
+}
+
+#[cfg(test)]
+mod integration_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_application_lifecycle() {
+        let mut app = Application::new();
+        assert!(app.initialize().await.is_ok());
+        assert!(app.is_initialized());
+        assert!(app.shutdown().await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_core_plugin_loading() {
+        let mut app = Application::new();
+        app.initialize().await.unwrap();
+        
+        let plugin_manager_lock = app.plugin_manager();
+        let mut plugin_manager = plugin_manager_lock.write().await;
+        assert!(plugin_manager.load_plugin("markdown-editor").await.is_ok());
+        assert!(plugin_manager.is_plugin_loaded("markdown-editor"));
     }
 }

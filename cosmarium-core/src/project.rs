@@ -8,7 +8,7 @@
 //! or as directory structures, providing flexibility for different workflows
 //! and collaboration needs.
 
-use crate::{Error, Result, events::EventBus};
+use crate::{Error, Result, events::EventBus, git::GitIntegration};
 use cosmarium_plugin_api::{Event, EventType};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -362,19 +362,14 @@ impl ProjectManager {
     /// # });
     /// ```
     pub async fn save_project(&mut self) -> Result<()> {
-        let name;
-        let path_buf;
-        {
-            let project = self.active_project.as_mut()
-                .ok_or_else(|| Error::project("No active project"))?;
-            name = project.name().to_string();
-            path_buf = project.path().to_path_buf();
-        }
-
-        // Write project file outside of any long-lived mutable borrow.
-        tokio::fs::write(&path_buf, name.as_bytes()).await
-            .map_err(|e| Error::project(format!("Failed to write project: {}", e)))?;
-
+        let project = self.active_project.as_mut()
+            .ok_or_else(|| Error::project("No active project"))?;
+        
+        let name = project.name().to_string();
+        
+        // Save the project
+        project.save().await?;
+        
         // Emit project saved event
         if let Some(ref event_bus) = self.event_bus {
             let bus = event_bus.write().await;
@@ -634,16 +629,29 @@ impl Default for ProjectManager {
 ///
 /// Projects contain documents, resources, and metadata for organizing
 /// writing work. They can be stored as directories or compressed files.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// A writing project in Cosmarium.
+///
+/// Projects contain documents, resources, and metadata for organizing
+/// writing work. They are stored as directory structures with Git versioning.
+#[derive(Debug)]
 pub struct Project {
-    /// Project metadata
-    metadata: ProjectMetadata,
+    /// Persisted project state (metadata, settings, etc.)
+    state: ProjectState,
     /// Project directory path
     path: PathBuf,
-    /// Document references
-    documents: Vec<Uuid>,
+    /// Git integration
+    git: Option<GitIntegration>,
     /// Whether the project has unsaved changes
     has_unsaved_changes: bool,
+}
+
+/// Persisted state of the project, saved to `meta/core.toon`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectState {
+    /// Project metadata
+    metadata: ProjectMetadata,
+    /// Document references
+    documents: Vec<Uuid>,
     /// Project settings
     settings: ProjectSettings,
 }
@@ -664,12 +672,26 @@ impl Project {
         let path = path.as_ref().to_path_buf();
         let metadata = ProjectMetadata::new(name, template);
         
-        let project = Self {
+        let state = ProjectState {
             metadata,
-            path,
             documents: Vec::new(),
-            has_unsaved_changes: true,
             settings: ProjectSettings::default(),
+        };
+
+        // Initialize Git repo
+        let git = match GitIntegration::init(&path) {
+            Ok(g) => Some(g),
+            Err(e) => {
+                warn!("Failed to initialize git repo: {}", e);
+                None
+            }
+        };
+        
+        let project = Self {
+            state,
+            path,
+            git,
+            has_unsaved_changes: true,
         };
 
         Ok(project)
@@ -679,29 +701,71 @@ impl Project {
     ///
     /// # Arguments
     ///
-    /// * `path` - Path to the project directory or file
+    /// * `path` - Path to the project directory
     ///
     /// # Errors
     ///
     /// Returns an error if the project cannot be loaded.
     pub async fn load<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path = path.as_ref();
-        let project_file = path.join("project.json");
+        let meta_dir = path.join("meta");
+        let core_file = meta_dir.join("core.toon");
         
-        if !project_file.exists() {
-            return Err(Error::project("Project file not found"));
-        }
+        // Fallback for legacy project.json
+        let legacy_file = path.join("project.json");
 
-        let content = tokio::fs::read_to_string(&project_file).await
-            .map_err(|e| Error::project(format!("Failed to read project file: {}", e)))?;
+        let state = if core_file.exists() {
+            let content = tokio::fs::read_to_string(&core_file).await
+                .map_err(|e| Error::project(format!("Failed to read core metadata: {}", e)))?;
+            
+            serde_toon2::from_str(&content)
+                .map_err(|e| Error::project(format!("Failed to parse core metadata: {}", e)))?
+        } else if legacy_file.exists() {
+            // Legacy load
+            let content = tokio::fs::read_to_string(&legacy_file).await
+                .map_err(|e| Error::project(format!("Failed to read legacy project file: {}", e)))?;
+            
+            // We need a temporary struct to deserialize legacy JSON which matches old Project structure
+            #[derive(Deserialize)]
+            struct LegacyProject {
+                metadata: ProjectMetadata,
+                documents: Vec<Uuid>,
+                settings: ProjectSettings,
+            }
+            
+            let legacy: LegacyProject = serde_json::from_str(&content)
+                .map_err(|e| Error::project(format!("Failed to parse legacy project file: {}", e)))?;
+                
+            ProjectState {
+                metadata: legacy.metadata,
+                documents: legacy.documents,
+                settings: legacy.settings,
+            }
+        } else {
+            return Err(Error::project("Project metadata not found"));
+        };
 
-        let mut project: Project = serde_json::from_str(&content)
-            .map_err(|e| Error::project(format!("Failed to parse project file: {}", e)))?;
+        // Initialize Git integration
+        let git = match GitIntegration::open(path) {
+            Ok(g) => Some(g),
+            Err(_) => {
+                // Try to init if not exists (migration scenario)
+                match GitIntegration::init(path) {
+                    Ok(g) => Some(g),
+                    Err(e) => {
+                        warn!("Failed to initialize git repo for existing project: {}", e);
+                        None
+                    }
+                }
+            }
+        };
 
-        project.path = path.to_path_buf();
-        project.has_unsaved_changes = false;
-
-        Ok(project)
+        Ok(Self {
+            state,
+            path: path.to_path_buf(),
+            git,
+            has_unsaved_changes: false,
+        })
     }
 
     /// Save the project to disk.
@@ -710,16 +774,33 @@ impl Project {
     ///
     /// Returns an error if the project cannot be saved.
     pub async fn save(&mut self) -> Result<()> {
-        let project_file = self.path.join("project.json");
+        let meta_dir = self.path.join("meta");
+        let content_dir = self.path.join("content");
+        
+        // Ensure directories exist
+        tokio::fs::create_dir_all(&meta_dir).await
+            .map_err(|e| Error::project(format!("Failed to create meta directory: {}", e)))?;
+        tokio::fs::create_dir_all(&content_dir).await
+            .map_err(|e| Error::project(format!("Failed to create content directory: {}", e)))?;
+            
+        let core_file = meta_dir.join("core.toon");
         
         // Update metadata
-        self.metadata.last_modified = SystemTime::now();
+        self.state.metadata.last_modified = SystemTime::now();
 
-        let content = serde_json::to_string_pretty(self)
-            .map_err(|e| Error::project(format!("Failed to serialize project: {}", e)))?;
+        // Serialize to TOON
+        let content = serde_toon2::to_string(&self.state)
+            .map_err(|e| Error::project(format!("Failed to serialize project state: {}", e)))?;
 
-        tokio::fs::write(&project_file, content).await
-            .map_err(|e| Error::project(format!("Failed to write project file: {}", e)))?;
+        tokio::fs::write(&core_file, content).await
+            .map_err(|e| Error::project(format!("Failed to write core metadata: {}", e)))?;
+
+        // Commit changes if git is available
+        if let Some(git) = &self.git {
+            if let Err(e) = git.commit("Save project") {
+                warn!("Failed to commit changes: {}", e);
+            }
+        }
 
         self.has_unsaved_changes = false;
         Ok(())
@@ -727,7 +808,7 @@ impl Project {
 
     /// Get the project name.
     pub fn name(&self) -> &str {
-        &self.metadata.name
+        &self.state.metadata.name
     }
 
     /// Get the project path.
@@ -737,13 +818,13 @@ impl Project {
 
     /// Get the project metadata.
     pub fn metadata(&self) -> &ProjectMetadata {
-        &self.metadata
+        &self.state.metadata
     }
 
     /// Get mutable project metadata.
     pub fn metadata_mut(&mut self) -> &mut ProjectMetadata {
         self.mark_modified();
-        &mut self.metadata
+        &mut self.state.metadata
     }
 
     /// Check if the project has unsaved changes.
@@ -753,34 +834,34 @@ impl Project {
 
     /// Get the project settings.
     pub fn settings(&self) -> &ProjectSettings {
-        &self.settings
+        &self.state.settings
     }
 
     /// Get mutable project settings.
     pub fn settings_mut(&mut self) -> &mut ProjectSettings {
         self.mark_modified();
-        &mut self.settings
+        &mut self.state.settings
     }
 
     /// Add a document to the project.
     pub fn add_document(&mut self, document_id: Uuid) {
-        if !self.documents.contains(&document_id) {
-            self.documents.push(document_id);
+        if !self.state.documents.contains(&document_id) {
+            self.state.documents.push(document_id);
             self.mark_modified();
         }
     }
 
     /// Remove a document from the project.
     pub fn remove_document(&mut self, document_id: Uuid) {
-        if let Some(pos) = self.documents.iter().position(|&id| id == document_id) {
-            self.documents.remove(pos);
+        if let Some(pos) = self.state.documents.iter().position(|&id| id == document_id) {
+            self.state.documents.remove(pos);
             self.mark_modified();
         }
     }
 
     /// Get the list of document IDs in the project.
     pub fn documents(&self) -> &[Uuid] {
-        &self.documents
+        &self.state.documents
     }
 
     /// Update method for project maintenance.
@@ -792,7 +873,7 @@ impl Project {
     /// Mark the project as modified.
     fn mark_modified(&mut self) {
         self.has_unsaved_changes = true;
-        self.metadata.last_modified = SystemTime::now();
+        self.state.metadata.last_modified = SystemTime::now();
     }
 }
 
@@ -869,6 +950,7 @@ impl Default for ProjectSettings {
 mod tests {
     use super::*;
     use crate::events::EventBus;
+    use tempfile::tempdir;
 
     /// Create a temporary directory for tests without relying on the `tempfile` crate.
     /// If you prefer to use `tempfile`, enable a feature and adapt this helper.
@@ -968,5 +1050,139 @@ mod tests {
         assert!(settings.backup_enabled);
         assert_eq!(settings.backup_count, 5);
         assert!(settings.custom.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_project_toon_format() {
+        let temp_dir = make_tempdir();
+        let project_path = temp_dir.join("toon_test_project");
+        tokio::fs::create_dir_all(&project_path).await.unwrap();
+        
+        // Create and save project
+        let mut project = Project::new("TOON Test", &project_path, "novel").unwrap();
+        project.save().await.unwrap();
+        
+        // Verify TOON file exists
+        let core_toon_path = project_path.join("meta/core.toon");
+        assert!(core_toon_path.exists(), "core.toon file should exist");
+        
+        // Verify TOON content is parseable
+        let toon_content = tokio::fs::read_to_string(&core_toon_path).await.unwrap();
+        assert!(toon_content.contains("metadata:"), "TOON should contain metadata section");
+        assert!(toon_content.contains("name: TOON Test"), "TOON should contain project name");
+        assert!(toon_content.contains("template: novel"), "TOON should contain template");
+        
+        // Verify it can be deserialized
+        let loaded_project = Project::load(&project_path).await.unwrap();
+        assert_eq!(loaded_project.name(), "TOON Test");
+    }
+
+    #[tokio::test]
+    async fn test_project_folder_structure() {
+        let temp_dir = make_tempdir();
+        let project_path = temp_dir.join("structure_test");
+        tokio::fs::create_dir_all(&project_path).await.unwrap();
+        
+        let mut project = Project::new("Structure Test", &project_path, "novel").unwrap();
+        project.save().await.unwrap();
+        
+        // Verify required directories exist
+        assert!(project_path.join("meta").is_dir(), "meta/ directory should exist");
+        assert!(project_path.join("content").is_dir(), "content/ directory should exist");
+        assert!(project_path.join(".git").is_dir(), ".git/ directory should exist");
+        
+        // Verify core.toon exists
+        assert!(project_path.join("meta/core.toon").exists(), "meta/core.toon should exist");
+    }
+
+    #[tokio::test]
+    async fn test_project_git_initialization() {
+        let temp_dir = make_tempdir();
+        let project_path = temp_dir.join("git_test_project");
+        tokio::fs::create_dir_all(&project_path).await.unwrap();
+        
+        let project = Project::new("Git Test", &project_path, "novel").unwrap();
+        
+        // Verify Git repo was initialized
+        assert!(project.git.is_some(), "Git integration should be initialized");
+        assert!(project_path.join(".git").is_dir(), ".git directory should exist");
+        assert!(project_path.join(".git/config").exists(), ".git/config should exist");
+    }
+
+    #[tokio::test]
+    async fn test_project_legacy_json_migration() {
+        let temp_dir = make_tempdir();
+        let project_path = temp_dir.join("legacy_test");
+        tokio::fs::create_dir_all(&project_path).await.unwrap();
+        
+        // Create legacy project.json
+        let legacy_metadata = serde_json::json!({
+            "name": "Legacy Project",
+            "description": "A legacy project",
+            "author": "Test Author",
+            "version": "1.0.0",
+            "created": SystemTime::now(),
+            "last_modified": SystemTime::now(),
+            "template": "novel",
+            "tags": ["test"],
+            "properties": {}
+        });
+        
+        let legacy_json = serde_json::json!({
+            "metadata": legacy_metadata,
+            "documents": [],
+            "settings": {
+                "use_compressed_format": false,
+                "auto_save_interval": 30,
+                "backup_enabled": true,
+                "backup_count": 5,
+                "custom": {}
+            }
+        });
+        
+        let legacy_path = project_path.join("project.json");
+        tokio::fs::write(&legacy_path, serde_json::to_string_pretty(&legacy_json).unwrap())
+            .await
+            .unwrap();
+        
+        // Load legacy project (should migrate automatically)
+        let loaded_project = Project::load(&project_path).await.unwrap();
+        assert_eq!(loaded_project.name(), "Legacy Project");
+        assert_eq!(loaded_project.metadata().template, "novel");
+        assert_eq!(loaded_project.metadata().tags, vec!["test"]);
+    }
+
+    #[tokio::test]
+    async fn test_project_save_load_preserves_data() {
+        let temp_dir = make_tempdir();
+        let project_path = temp_dir.join("preservation_test");
+        tokio::fs::create_dir_all(&project_path).await.unwrap();
+        
+        // Create project with custom data
+        let mut project = Project::new("Preserve Test", &project_path, "screenplay").unwrap();
+        
+        // Add some documents
+        let doc1 = Uuid::new_v4();
+        let doc2 = Uuid::new_v4();
+        project.add_document(doc1);
+        project.add_document(doc2);
+        
+        // Modify metadata
+        project.metadata_mut().description = "Test description".to_string();
+        project.metadata_mut().tags.push("tag1".to_string());
+        project.metadata_mut().tags.push("tag2".to_string());
+        
+        // Save
+        project.save().await.unwrap();
+        
+        // Load and verify
+        let loaded = Project::load(&project_path).await.unwrap();
+        assert_eq!(loaded.name(), "Preserve Test");
+        assert_eq!(loaded.metadata().template, "screenplay");
+        assert_eq!(loaded.metadata().description, "Test description");
+        assert_eq!(loaded.metadata().tags, vec!["tag1", "tag2"]);
+        assert_eq!(loaded.documents().len(), 2);
+        assert!(loaded.documents().contains(&doc1));
+        assert!(loaded.documents().contains(&doc2));
     }
 }

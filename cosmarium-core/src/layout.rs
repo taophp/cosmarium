@@ -359,6 +359,9 @@ impl LayoutManager {
     /// Returns a mutable reference to a panel and emits layout changed event.
     /// # Example
     /// ```
+    /// use cosmarium_core::layout::Layout;
+    /// use uuid::Uuid;
+    ///
     /// let mut layout = Layout::default();
     /// let panel_id = Uuid::new_v4();
     /// let panel = layout.get_panel_mut(panel_id);

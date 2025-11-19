@@ -16,7 +16,9 @@ egui = { workspace = true }
 egui_extras = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tokio = { workspace = true }
+serde_toon2 = "0.1.0"
+gix = "0.74"
+tokio = { workspace = true, features = ["full"] }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
@@ -40,3 +42,7 @@ hot-reload = ["libloading"]
 [dependencies.libloading]
 version = "0.8"
 optional = true
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio-test = { workspace = true }

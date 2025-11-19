@@ -18,11 +18,14 @@ use std::collections::HashMap;
 /// # Example
 ///
 /// ```rust
+/// # #[cfg(feature = "live-preview")]
+/// # {
 /// use cosmarium_markdown_editor::preview::PreviewRenderer;
 ///
 /// let renderer = PreviewRenderer::new();
 /// let html = renderer.render("# Hello World").unwrap();
 /// assert!(html.contains("<h1>"));
+/// # }
 /// ```
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -92,11 +95,14 @@ impl PreviewRenderer {
     /// # Example
     ///
     /// ```rust
+    /// # #[cfg(feature = "live-preview")]
+    /// # {
     /// use cosmarium_markdown_editor::preview::PreviewRenderer;
     ///
     /// let renderer = PreviewRenderer::new();
     /// let html = renderer.render("# Hello **World**").unwrap();
     /// assert!(html.contains("<h1>Hello <strong>World</strong></h1>"));
+    /// # }
     /// ```
     pub fn render(&self, markdown: &str) -> Result<String> {
         #[cfg(feature = "live-preview")]
@@ -146,11 +152,14 @@ impl PreviewRenderer {
     /// # Example
     ///
     /// ```rust
+    /// # #[cfg(feature = "live-preview")]
+    /// # {
     /// use cosmarium_markdown_editor::preview::PreviewRenderer;
     ///
     /// let renderer = PreviewRenderer::new();
     /// let html = renderer.render_fragment("**bold text**").unwrap();
     /// assert_eq!(html, "<p><strong>bold text</strong></p>\n");
+    /// # }
     /// ```
     pub fn render_fragment(&self, markdown: &str) -> Result<String> {
         #[cfg(feature = "live-preview")]
@@ -537,6 +546,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "live-preview")]
     fn test_basic_markdown_rendering() {
         let renderer = PreviewRenderer::new();
         let html = renderer.render_fragment("# Hello World").unwrap();
@@ -544,6 +554,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "live-preview")]
     fn test_bold_and_italic() {
         let renderer = PreviewRenderer::new();
         let html = renderer.render_fragment("**bold** and *italic*").unwrap();
@@ -552,6 +563,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "live-preview")]
     fn test_code_blocks() {
         let renderer = PreviewRenderer::new();
         let html = renderer.render_fragment("```rust\nfn main() {}\n```").unwrap();
@@ -570,6 +582,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "live-preview")]
     fn test_text_replacements() {
         let mut renderer = PreviewRenderer::new();
         renderer.add_replacement("--", "—");
@@ -595,6 +608,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "live-preview")]
     fn test_full_html_rendering() {
         let renderer = PreviewRenderer::new();
         let html = renderer.render("# Test").unwrap();
@@ -604,6 +618,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "live-preview")]
     fn test_replacement_removal() {
         let mut renderer = PreviewRenderer::new();
         renderer.add_replacement("test", "replacement");

@@ -21,5 +21,8 @@ async-trait = { workspace = true }
 tracing = { workspace = true }
 chrono = { workspace = true }
 
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }
+
 [features]
 default = []

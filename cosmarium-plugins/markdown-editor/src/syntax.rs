@@ -510,7 +510,10 @@ mod tests {
     #[test]
     fn test_enable_disable() {
         let mut highlighter = MarkdownHighlighter::new().unwrap();
+        #[cfg(feature = "syntax-highlighting")]
         assert!(highlighter.is_enabled());
+        #[cfg(not(feature = "syntax-highlighting"))]
+        assert!(!highlighter.is_enabled());
         
         highlighter.set_enabled(false);
         assert!(!highlighter.is_enabled());

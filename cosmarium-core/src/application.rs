@@ -31,7 +31,9 @@ use tracing::{info, error, warn};
 /// app.initialize().await?;
 /// 
 /// // Load a plugin
-/// app.plugin_manager().load_plugin("markdown-editor").await?;
+/// let plugin_manager = app.plugin_manager();
+/// let mut manager = plugin_manager.write().await;
+/// manager.load_plugin("markdown-editor").await?;
 /// 
 /// // Application is ready to use
 /// # Ok::<(), Box<dyn std::error::Error>>(())

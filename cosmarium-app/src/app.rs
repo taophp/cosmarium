@@ -10,8 +10,9 @@ use cosmarium_plugin_api::{Plugin, PluginContext, PanelPlugin, Event, EventType}
 use cosmarium_markdown_editor::MarkdownEditorPlugin;
 use eframe::egui;
 use std::collections::HashMap;
-use std::sync::Arc;
+ use std::sync::Arc;
 use std::time::Instant;
+use uuid::Uuid;
 
 /// Main Cosmarium application state
 pub struct Cosmarium {
@@ -37,8 +38,16 @@ pub struct Cosmarium {
     show_settings: bool,
     /// Current project path
     current_project: Option<std::path::PathBuf>,
+    /// Active document being edited
+    active_document_id: Option<uuid::Uuid>,
     /// UI state
     ui_state: UiState,
+    /// Whether to show the new project dialog
+    show_new_project_dialog: bool,
+    /// New project dialog state
+    new_project_name: String,
+    new_project_path: String,
+    new_project_template: String,
 }
 
 /// UI state for the application
@@ -94,7 +103,16 @@ impl Cosmarium {
             show_plugin_manager: false,
             show_settings: false,
             current_project: None,
+            active_document_id: None,
             ui_state: UiState::default(),
+            show_new_project_dialog: false,
+            new_project_name: String::new(),
+            new_project_path: dirs::document_dir()
+                .unwrap_or_else(|| std::path::PathBuf::from("."))
+                .join("Cosmarium Projects")
+                .to_string_lossy()
+                .to_string(),
+            new_project_template: "novel".to_string(),
         };
 
         // Initialize the application
@@ -115,6 +133,13 @@ impl Cosmarium {
     /// Initialize the application and load core plugins.
     fn initialize(&mut self) -> Result<()> {
         tracing::info!("Initializing Cosmarium application");
+
+        // Initialize core application (this is async, so we need a runtime)
+        let rt = tokio::runtime::Runtime::new()
+            .map_err(|e| anyhow::anyhow!("Failed to create Tokio runtime: {}", e))?;
+        rt.block_on(async {
+            self.core_app.initialize().await
+        })?;
 
         // Load configuration
         self.config = Config::load_or_default()?;
@@ -165,6 +190,143 @@ impl Cosmarium {
         Ok(())
     }
 
+    /// Open a project asynchronously (called from file dialog).
+    fn open_project_async(&mut self, path: std::path::PathBuf) -> Result<()> {
+        tracing::info!("Opening project from {:?}", path);
+        
+        // Clone the Arc to avoid lifetime issues
+        let project_manager = Arc::clone(&self.core_app.project_manager());
+        let path_clone = path.clone();
+        
+        let rt = tokio::runtime::Runtime::new()
+            .map_err(|e| anyhow::anyhow!("Failed to create Tokio runtime: {}", e))?;
+        rt.block_on(async move {
+            let mut pm = project_manager.write().await;
+            pm.open_project(&path_clone).await
+        })?;
+        
+        self.current_project = Some(path);
+        
+        // Load first document into editor (if any)
+        let project_manager = Arc::clone(&self.core_app.project_manager());
+        let document_manager = Arc::clone(&self.core_app.document_manager());
+        
+        let rt2 = tokio::runtime::Runtime::new()
+            .map_err(|e| anyhow::anyhow!("Failed to create Tokio runtime: {}", e))?;
+        let (doc_id_opt, doc_content) = rt2.block_on(async move {
+            let pm = project_manager.read().await;
+            let dm = document_manager.read().await;
+            
+            if let Some(project) = pm.active_project() {
+                if let Some(&doc_id) = project.documents().first() {
+                    if let Some(doc) = dm.get_document(doc_id) {
+                        return (Some(doc_id), Some(doc.content().to_string()));
+                    }
+                }
+            }
+            (None, None)
+        });
+        
+        // Set active document and content in editor if we got any
+        self.active_document_id = doc_id_opt;
+        if let Some(content) = doc_content {
+            self.plugin_context.set_shared_state("markdown_editor_content", content);
+        }
+        
+        Ok(())
+    }
+
+    /// Save the current project.
+    fn save_current_project(&mut self) -> Result<()> {
+        if self.current_project.is_none() {
+            tracing::warn!("No active project to save");
+            return Ok(());
+        }
+        
+        tracing::info!("Saving current project");
+        
+        // Get editor content from MarkdownEditorPlugin
+        let editor_content = if let Some(editor) = self.panel_plugins.get("Markdown Editor") {
+            // Try to downcast to MarkdownEditorPlugin
+            // Since we can't easily downcast trait objects, use shared state
+            self.plugin_context.get_shared_state::<String>("markdown_editor_content")
+        } else {
+            None
+        };
+        
+        let project_manager = Arc::clone(&self.core_app.project_manager());
+        let document_manager = Arc::clone(&self.core_app.document_manager());
+        let document_id = self.active_document_id;
+        
+        let rt = tokio::runtime::Runtime::new()
+            .map_err(|e| anyhow::anyhow!("Failed to create Tokio runtime: {}", e))?;
+        
+        // Save editor content to document if we have content
+        if let Some(content) = editor_content {
+            let saved_doc_id = rt.block_on(async move {
+                let mut dm = document_manager.write().await;
+                let mut pm = project_manager.write().await;
+                
+                // Create or update document
+                let doc_id = if let Some(id) = document_id {
+                    // Update existing document
+                    if let Some(doc) = dm.get_document_mut(id) {
+                        doc.set_content(&content);
+                        dm.save_document(id).await?;
+                    }
+                    id
+                } else {
+                    // Create new document
+                    use cosmarium_core::document::DocumentFormat;
+                    let doc_id = dm.create_document("Untitled", &content, DocumentFormat::Markdown).await?;
+                    
+                    // Add document to project
+                    if let Some(project) = pm.active_project_mut() {
+                        project.add_document(doc_id);
+                    }
+                    
+                    doc_id
+                };
+                
+                // Save project
+                pm.save_project().await?;
+                
+                Ok::<Uuid, anyhow::Error>(doc_id)
+            })?;
+            
+            // Update active document ID
+            self.active_document_id = Some(saved_doc_id);
+        } else {
+            // No editor content, just save project
+            rt.block_on(async move {
+                let mut pm = project_manager.write().await;
+                pm.save_project().await
+            })?;
+        }
+        
+        Ok(())
+    }
+
+    /// Create a new project with the given parameters.
+    fn create_new_project(&mut self, name: String, path: String, template: String) -> Result<()> {
+        let project_path = std::path::PathBuf::from(&path).join(&name);
+        
+        tracing::info!("Creating new project '{}' at {:?}", name, project_path);
+        
+        let project_manager = Arc::clone(&self.core_app.project_manager());
+        let project_path_clone = project_path.clone();
+        
+        let rt = tokio::runtime::Runtime::new()
+            .map_err(|e| anyhow::anyhow!("Failed to create Tokio runtime: {}", e))?;
+        rt.block_on(async move {
+            let mut pm = project_manager.write().await;
+            pm.create_project(&name, &project_path_clone, &template).await
+        })?;
+        
+        self.current_project = Some(project_path);
+        Ok(())
+    }
+
     /// Render the main menu bar.
     fn render_menu_bar(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
@@ -172,15 +334,24 @@ impl Cosmarium {
                 // File menu
                 ui.menu_button("File", |ui| {
                     if ui.button("New Project").clicked() {
-                        // TODO: Implement new project
+                        self.show_new_project_dialog = true;
                         ui.close_menu();
                     }
                     if ui.button("Open Project").clicked() {
-                        // TODO: Implement open project dialog
+                        if let Some(path) = rfd::FileDialog::new()
+                            .set_title("Open Project")
+                            .pick_folder()
+                        {
+                            if let Err(e) = self.open_project_async(path) {
+                                tracing::error!("Failed to open project: {}", e);
+                            }
+                        }
                         ui.close_menu();
                     }
                     if ui.button("Save Project").clicked() {
-                        // TODO: Implement save project
+                        if let Err(e) = self.save_current_project() {
+                            tracing::error!("Failed to save project: {}", e);
+                        }
                         ui.close_menu();
                     }
                     ui.separator();
@@ -473,6 +644,70 @@ impl Cosmarium {
                         }
                         if ui.button("Cancel").clicked() {
                             self.show_settings = false;
+                        }
+                    });
+                });
+        }
+
+        // New Project dialog
+        if self.show_new_project_dialog {
+            egui::Window::new("New Project")
+                .collapsible(false)
+                .default_width(450.0)
+                .show(ctx, |ui| {
+                    ui.label("Create a new Cosmarium project");
+                    ui.separator();
+                    
+                    ui.horizontal(|ui| {
+                        ui.label("Project Name:");
+                        ui.text_edit_singleline(&mut self.new_project_name);
+                    });
+                    
+                    ui.horizontal(|ui| {
+                        ui.label("Location:");
+                        ui.text_edit_singleline(&mut self.new_project_path);
+                        if ui.button("Browse...").clicked() {
+                            if let Some(path) = rfd::FileDialog::new()
+                                .set_title("Select Project Location")
+                                .pick_folder()
+                            {
+                                self.new_project_path = path.to_string_lossy().to_string();
+                            }
+                        }
+                    });
+                    
+                    ui.horizontal(|ui| {
+                        ui.label("Template:");
+                        egui::ComboBox::from_label("")
+                            .selected_text(&self.new_project_template)
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut self.new_project_template, "novel".to_string(), "Novel");
+                                ui.selectable_value(&mut self.new_project_template, "short-story".to_string(), "Short Story");
+                                ui.selectable_value(&mut self.new_project_template, "screenplay".to_string(), "Screenplay");
+                                ui.selectable_value(&mut self.new_project_template, "blog".to_string(), "Blog");
+                            });
+                    });
+                    
+                    ui.separator();
+                    
+                    ui.horizontal(|ui| {
+                        if ui.button("Create").clicked() {
+                            if !self.new_project_name.is_empty() {
+                                if let Err(e) = self.create_new_project(
+                                    self.new_project_name.clone(),
+                                    self.new_project_path.clone(),
+                                    self.new_project_template.clone(),
+                                ) {
+                                    tracing::error!("Failed to create project: {}", e);
+                                } else {
+                                    self.show_new_project_dialog = false;
+                                    self.new_project_name.clear();
+                                }
+                            }
+                        }
+                        if ui.button("Cancel").clicked() {
+                            self.show_new_project_dialog = false;
+                            self.new_project_name.clear();
                         }
                     });
                 });
