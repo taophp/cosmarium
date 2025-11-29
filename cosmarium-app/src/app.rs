@@ -40,6 +40,8 @@ pub struct Cosmarium {
     current_project: Option<std::path::PathBuf>,
     /// Active document being edited
     active_document_id: Option<uuid::Uuid>,
+    /// Recent projects cache
+    recent_projects: Vec<std::path::PathBuf>,
     /// UI state
     ui_state: UiState,
     /// Whether to show the new project dialog
@@ -104,6 +106,7 @@ impl Cosmarium {
             show_settings: false,
             current_project: None,
             active_document_id: None,
+            recent_projects: Vec::new(),
             ui_state: UiState::default(),
             show_new_project_dialog: false,
             new_project_name: String::new(),
@@ -140,6 +143,14 @@ impl Cosmarium {
         rt.block_on(async {
             self.core_app.initialize().await
         })?;
+
+        // Load recent projects
+        let project_manager = Arc::clone(&self.core_app.project_manager());
+        let recent = rt.block_on(async {
+            let pm = project_manager.read().await;
+            pm.recent_projects().to_vec()
+        });
+        self.recent_projects = recent;
 
         // Load configuration
         self.config = Config::load_or_default()?;
@@ -213,8 +224,9 @@ impl Cosmarium {
         
         let rt2 = tokio::runtime::Runtime::new()
             .map_err(|e| anyhow::anyhow!("Failed to create Tokio runtime: {}", e))?;
+        let pm_clone = Arc::clone(&project_manager);
         let (doc_id_opt, doc_content) = rt2.block_on(async move {
-            let pm = project_manager.read().await;
+            let pm = pm_clone.read().await;
             let dm = document_manager.read().await;
             
             if let Some(project) = pm.active_project() {
@@ -232,6 +244,15 @@ impl Cosmarium {
         if let Some(content) = doc_content {
             self.plugin_context.set_shared_state("markdown_editor_content", content);
         }
+        
+        // Update recent projects list
+        let rt3 = tokio::runtime::Runtime::new()
+            .map_err(|e| anyhow::anyhow!("Failed to create Tokio runtime: {}", e))?;
+        let recent = rt3.block_on(async {
+            let pm = project_manager.read().await;
+            pm.recent_projects().to_vec()
+        });
+        self.recent_projects = recent;
         
         Ok(())
     }
@@ -315,15 +336,27 @@ impl Cosmarium {
         
         let project_manager = Arc::clone(&self.core_app.project_manager());
         let project_path_clone = project_path.clone();
+        let path_buf = project_path.clone();
         
         let rt = tokio::runtime::Runtime::new()
             .map_err(|e| anyhow::anyhow!("Failed to create Tokio runtime: {}", e))?;
         rt.block_on(async move {
             let mut pm = project_manager.write().await;
-            pm.create_project(&name, &project_path_clone, &template).await
+            pm.create_project(&name, &path_buf, &template).await
         })?;
         
         self.current_project = Some(project_path);
+        
+        // Update recent projects list
+        let rt2 = tokio::runtime::Runtime::new()
+            .map_err(|e| anyhow::anyhow!("Failed to create Tokio runtime: {}", e))?;
+        let project_manager = Arc::clone(&self.core_app.project_manager());
+        let recent = rt2.block_on(async {
+            let pm = project_manager.read().await;
+            pm.recent_projects().to_vec()
+        });
+        self.recent_projects = recent;
+        
         Ok(())
     }
 
@@ -348,6 +381,33 @@ impl Cosmarium {
                         }
                         ui.close_menu();
                     }
+                    
+                    // Open Recent submenu
+                    ui.menu_button("Open Recent", |ui| {
+                        if self.recent_projects.is_empty() {
+                            ui.label("No recent projects");
+                        } else {
+                            let mut path_to_open = None;
+                            for path in &self.recent_projects {
+                                let label = path.file_name()
+                                    .and_then(|n| n.to_str())
+                                    .unwrap_or("Unknown Project");
+                                    
+                                if ui.button(label).clicked() {
+                                    path_to_open = Some(path.clone());
+                                    ui.close_menu();
+                                }
+                            }
+                            
+                            if let Some(path) = path_to_open {
+                                if let Err(e) = self.open_project_async(path) {
+                                    tracing::error!("Failed to open recent project: {}", e);
+                                }
+                                ui.close_menu();
+                            }
+                        }
+                    });
+
                     if ui.button("Save Project").clicked() {
                         if let Err(e) = self.save_current_project() {
                             tracing::error!("Failed to save project: {}", e);
