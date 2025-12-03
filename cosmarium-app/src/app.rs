@@ -42,6 +42,8 @@ pub struct Cosmarium {
     active_document_id: Option<uuid::Uuid>,
     /// Recent projects cache
     recent_projects: Vec<std::path::PathBuf>,
+    /// Current Git branch
+    current_branch: Option<String>,
     /// UI state
     ui_state: UiState,
     /// Whether to show the new project dialog
@@ -50,6 +52,17 @@ pub struct Cosmarium {
     new_project_name: String,
     new_project_path: String,
     new_project_template: String,
+}
+
+/// Identifiers for the top-level menus
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MenuId {
+    Cosmarium,
+    File,
+    Edit,
+    View,
+    Tools,
+    Help,
 }
 
 /// UI state for the application
@@ -67,6 +80,12 @@ struct UiState {
     show_menu_bar: bool,
     /// Whether status bar is visible
     show_status_bar: bool,
+    /// Whether any menu is currently expanded
+    menu_expanded: bool,
+    /// The name of the menu currently hovered over
+    hovered_menu: Option<String>,
+    /// The currently active (open) menu
+    active_menu: Option<MenuId>,
     /// Current theme name
     current_theme: String,
 }
@@ -80,6 +99,9 @@ impl Default for UiState {
             bottom_panel_height: 200.0,
             show_menu_bar: true,
             show_status_bar: true,
+            menu_expanded: false,
+            hovered_menu: None,
+            active_menu: None,
             current_theme: "Dark".to_string(),
         }
     }
@@ -107,6 +129,7 @@ impl Cosmarium {
             current_project: None,
             active_document_id: None,
             recent_projects: Vec::new(),
+            current_branch: None,
             ui_state: UiState::default(),
             show_new_project_dialog: false,
             new_project_name: String::new(),
@@ -185,6 +208,22 @@ impl Cosmarium {
         Ok(())
     }
 
+    /// Get the current Git branch name if a project is open.
+    fn get_current_branch(&self) -> Option<String> {
+        let project_manager = Arc::clone(&self.core_app.project_manager());
+        
+        let rt = tokio::runtime::Runtime::new().ok()?;
+        rt.block_on(async {
+            let pm = project_manager.read().await;
+            if let Some(project) = pm.active_project() {
+                if let Some(git) = project.git() {
+                    return git.current_branch().ok();
+                }
+            }
+            None
+        })
+    }
+
     /// Load a project from the specified path.
     fn load_project(&mut self, path: &std::path::Path) -> Result<()> {
         tracing::info!("Loading project from {:?}", path);
@@ -253,6 +292,9 @@ impl Cosmarium {
             pm.recent_projects().to_vec()
         });
         self.recent_projects = recent;
+        
+        // Get current Git branch
+        self.current_branch = self.get_current_branch();
         
         Ok(())
     }
@@ -357,148 +399,303 @@ impl Cosmarium {
         });
         self.recent_projects = recent;
         
+        // Get current Git branch
+        self.current_branch = self.get_current_branch();
+        
         Ok(())
     }
 
     /// Render the main menu bar.
+    /// Render the menu bar (Zed-style: compact or expanded).
     fn render_menu_bar(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
-            egui::menu::bar(ui, |ui| {
-                // File menu
-                ui.menu_button("File", |ui| {
-                    if ui.button("New Project").clicked() {
-                        self.show_new_project_dialog = true;
-                        ui.close_menu();
-                    }
-                    if ui.button("Open Project").clicked() {
-                        if let Some(path) = rfd::FileDialog::new()
-                            .set_title("Open Project")
-                            .pick_folder()
-                        {
-                            if let Err(e) = self.open_project_async(path) {
-                                tracing::error!("Failed to open project: {}", e);
-                            }
+        if self.ui_state.menu_expanded {
+            self.render_expanded_menu_bar(ctx);
+        } else {
+            self.render_compact_menu_bar(ctx);
+        }
+    }
+
+    /// Render the compact menu bar (burger + project + branch).
+    fn render_compact_menu_bar(&mut self, ctx: &egui::Context) {
+        egui::TopBottomPanel::top("compact_menu_bar").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                // Configure visuals for "frameless feel but visible hover"
+                let mut visuals = ui.visuals().clone();
+                visuals.widgets.inactive.bg_fill = egui::Color32::TRANSPARENT;
+                visuals.widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
+                visuals.widgets.inactive.bg_stroke = egui::Stroke::NONE;
+                
+                visuals.widgets.hovered.bg_stroke = egui::Stroke::NONE;
+                visuals.widgets.active.bg_stroke = egui::Stroke::NONE;
+                visuals.widgets.open.bg_stroke = egui::Stroke::NONE;
+                
+                ui.ctx().set_visuals(visuals);
+
+                // Burger menu button
+                if ui.button("☰").clicked() {
+                    self.ui_state.menu_expanded = true;
+                    self.ui_state.active_menu = Some(MenuId::Cosmarium);
+                }
+                
+                // Project name button
+                let project_name = self.current_project
+                    .as_ref()
+                    .and_then(|p| p.file_name())
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("No Project");
+                    
+                if ui.button(project_name).clicked() {
+                    // Open project selector
+                    if let Some(path) = rfd::FileDialog::new()
+                        .set_title("Open Project")
+                        .pick_folder()
+                    {
+                        if let Err(e) = self.open_project_async(path) {
+                            tracing::error!("Failed to open project: {}", e);
                         }
-                        ui.close_menu();
+                    }
+                }
+                
+                // Branch indicator
+                if let Some(branch) = &self.current_branch {
+                    ui.label("•");
+                    ui.label(branch);
+                }
+            });
+        });
+    }
+
+    /// Render the expanded menu bar (custom implementation).
+    fn render_expanded_menu_bar(&mut self, ctx: &egui::Context) {
+        egui::TopBottomPanel::top("expanded_menu_bar").show(ctx, |ui| {
+            // Horizontal menu bar
+            ui.horizontal(|ui| {
+                // Configure visuals for "frameless feel but visible hover"
+                let mut visuals = ui.visuals().clone();
+                visuals.widgets.inactive.bg_fill = egui::Color32::TRANSPARENT;
+                visuals.widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
+                visuals.widgets.inactive.bg_stroke = egui::Stroke::NONE;
+                
+                visuals.widgets.hovered.bg_stroke = egui::Stroke::NONE;
+                visuals.widgets.active.bg_stroke = egui::Stroke::NONE;
+                visuals.widgets.open.bg_stroke = egui::Stroke::NONE;
+                
+                visuals.widgets.noninteractive.bg_stroke.width = 0.5;
+                visuals.window_stroke.width = 0.5;
+                
+                ui.ctx().set_visuals(visuals);
+
+                // Helper closure to render a menu item
+                let mut render_menu_item = |ui: &mut egui::Ui, id: MenuId, label: &str, content: Box<dyn FnOnce(&mut Self, &mut egui::Ui)>| {
+                    let button_response = ui.button(label);
+                    
+                    // Click logic: toggle menu
+                    if button_response.clicked() {
+                        if self.ui_state.active_menu == Some(id) {
+                            self.ui_state.active_menu = None;
+                            self.ui_state.menu_expanded = false;
+                        } else {
+                            self.ui_state.active_menu = Some(id);
+                        }
                     }
                     
-                    // Open Recent submenu
-                    ui.menu_button("Open Recent", |ui| {
-                        if self.recent_projects.is_empty() {
-                            ui.label("No recent projects");
-                        } else {
-                            let mut path_to_open = None;
-                            for path in &self.recent_projects {
-                                let label = path.file_name()
-                                    .and_then(|n| n.to_str())
-                                    .unwrap_or("Unknown Project");
-                                    
-                                if ui.button(label).clicked() {
-                                    path_to_open = Some(path.clone());
-                                    ui.close_menu();
-                                }
-                            }
-                            
-                            if let Some(path) = path_to_open {
-                                if let Err(e) = self.open_project_async(path) {
-                                    tracing::error!("Failed to open recent project: {}", e);
-                                }
-                                ui.close_menu();
-                            }
-                        }
-                    });
-
-                    if ui.button("Save Project").clicked() {
-                        if let Err(e) = self.save_current_project() {
-                            tracing::error!("Failed to save project: {}", e);
-                        }
-                        ui.close_menu();
+                    // Hover logic: switch if another menu is open
+                    if self.ui_state.active_menu.is_some() && button_response.hovered() {
+                        self.ui_state.active_menu = Some(id);
                     }
-                    ui.separator();
-                    if ui.button("Export...").clicked() {
-                        // TODO: Implement export dialog
-                        ui.close_menu();
+                    
+                    // Popup rendering
+                    if self.ui_state.active_menu == Some(id) {
+                        let popup_id = ui.make_persistent_id(format!("{}_popup", label));
+                        
+                        // Sync with egui's internal state to ensure popup_below_widget renders
+                        if !ui.memory(|m| m.is_popup_open(popup_id)) {
+                            ui.memory_mut(|m| m.open_popup(popup_id));
+                        }
+                        
+                        egui::popup::popup_below_widget(ui, popup_id, &button_response, |ui| {
+                            ui.set_min_width(150.0);
+                            ui.with_layout(egui::Layout::top_down_justified(egui::Align::Min), |ui| {
+                                content(self, ui);
+                            });
+                        });
+                    }
+                };
+
+                // Cosmarium Menu
+                render_menu_item(ui, MenuId::Cosmarium, "Cosmarium", Box::new(|app, ui| {
+                    if ui.button("About").clicked() {
+                        app.show_about = true;
+                        app.ui_state.menu_expanded = false;
+                        app.ui_state.active_menu = None;
+                    }
+                    if ui.button("Settings").clicked() {
+                        app.show_settings = true;
+                        app.ui_state.menu_expanded = false;
+                        app.ui_state.active_menu = None;
                     }
                     ui.separator();
                     if ui.button("Exit").clicked() {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
-                });
+                }));
 
-                // Edit menu
-                ui.menu_button("Edit", |ui| {
-                    if ui.button("Undo").clicked() {
-                        // TODO: Implement undo
-                        ui.close_menu();
+                // File Menu
+                render_menu_item(ui, MenuId::File, "File", Box::new(|app, ui| {
+                    if ui.button("New Project").clicked() {
+                        app.show_new_project_dialog = true;
+                        app.ui_state.active_menu = None;
+                        app.ui_state.menu_expanded = false;
                     }
-                    if ui.button("Redo").clicked() {
-                        // TODO: Implement redo
-                        ui.close_menu();
-                    }
-                    ui.separator();
-                    if ui.button("Cut").clicked() {
-                        ui.close_menu();
-                    }
-                    if ui.button("Copy").clicked() {
-                        ui.close_menu();
-                    }
-                    if ui.button("Paste").clicked() {
-                        ui.close_menu();
-                    }
-                });
-
-                // View menu
-                ui.menu_button("View", |ui| {
-                    for (panel_name, panel_plugin) in &self.panel_plugins {
-                        let is_open = self.ui_state.open_panels.get(panel_name).unwrap_or(&false);
-                        let mut open = *is_open;
+                    if ui.button("Open Project").clicked() {
+                        // We need to close the menu before opening the dialog to avoid UI glitches
+                        app.ui_state.active_menu = None;
+                        app.ui_state.menu_expanded = false;
                         
-                        if ui.checkbox(&mut open, panel_plugin.panel_title()).clicked() {
-                            self.ui_state.open_panels.insert(panel_name.clone(), open);
-                            ui.close_menu();
+                        // Use a separate thread or deferred action for file dialog if possible, 
+                        // but here we just call it. Note: rfd might block.
+                        if let Some(path) = rfd::FileDialog::new()
+                            .set_title("Open Project")
+                            .pick_folder()
+                        {
+                            if let Err(e) = app.open_project_async(path) {
+                                tracing::error!("Failed to open project: {}", e);
+                            }
                         }
                     }
                     
+                    // Recent Projects (Submenu simulation - simplified as section for now)
+                    ui.separator();
+                    ui.label("Open Recent:");
+                    if app.recent_projects.is_empty() {
+                        ui.label("  No recent projects");
+                    } else {
+                        let mut path_to_open = None;
+                        for path in &app.recent_projects {
+                            let label = path.file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("Unknown Project");
+                                
+                            if ui.button(format!("  {}", label)).clicked() {
+                                path_to_open = Some(path.clone());
+                                app.ui_state.active_menu = None;
+                                app.ui_state.menu_expanded = false;
+                            }
+                        }
+                        
+                        if let Some(path) = path_to_open {
+                            if let Err(e) = app.open_project_async(path) {
+                                tracing::error!("Failed to open recent project: {}", e);
+                            }
+                        }
+                    }
+                    ui.separator();
+
+                    if ui.button("Save Project").clicked() {
+                        if let Err(e) = app.save_current_project() {
+                            tracing::error!("Failed to save project: {}", e);
+                        }
+                        app.ui_state.active_menu = None;
+                        app.ui_state.menu_expanded = false;
+                    }
+                    ui.separator();
+                    if ui.button("Export...").clicked() {
+                        app.ui_state.active_menu = None;
+                        app.ui_state.menu_expanded = false;
+                    }
+                }));
+
+                // Edit Menu
+                render_menu_item(ui, MenuId::Edit, "Edit", Box::new(|app, ui| {
+                    if ui.button("Undo").clicked() { app.ui_state.active_menu = None; app.ui_state.menu_expanded = false; }
+                    if ui.button("Redo").clicked() { app.ui_state.active_menu = None; app.ui_state.menu_expanded = false; }
+                    ui.separator();
+                    if ui.button("Cut").clicked() { app.ui_state.active_menu = None; app.ui_state.menu_expanded = false; }
+                    if ui.button("Copy").clicked() { app.ui_state.active_menu = None; app.ui_state.menu_expanded = false; }
+                    if ui.button("Paste").clicked() { app.ui_state.active_menu = None; app.ui_state.menu_expanded = false; }
+                }));
+
+                // View Menu
+                render_menu_item(ui, MenuId::View, "View", Box::new(|app, ui| {
+                    // We need to collect changes to avoid borrowing issues
+                    let mut panels_to_toggle = Vec::new();
+                    
+                    for (panel_name, panel_plugin) in &app.panel_plugins {
+                        let is_open = app.ui_state.open_panels.get(panel_name).unwrap_or(&false);
+                        let mut open = *is_open;
+                        
+                        if ui.checkbox(&mut open, panel_plugin.panel_title()).clicked() {
+                            panels_to_toggle.push((panel_name.clone(), open));
+                            // Don't close menu for checkboxes usually
+                        }
+                    }
+                    
+                    for (name, open) in panels_to_toggle {
+                        app.ui_state.open_panels.insert(name, open);
+                    }
+                    
                     ui.separator();
                     
-                    if ui.checkbox(&mut self.ui_state.show_menu_bar, "Menu Bar").clicked() {
-                        ui.close_menu();
+                    if ui.checkbox(&mut app.ui_state.show_menu_bar, "Menu Bar").clicked() {
+                        // app.ui_state.active_menu = None; // Optional
                     }
-                    if ui.checkbox(&mut self.ui_state.show_status_bar, "Status Bar").clicked() {
-                        ui.close_menu();
+                    if ui.checkbox(&mut app.ui_state.show_status_bar, "Status Bar").clicked() {
+                        // app.ui_state.active_menu = None; // Optional
                     }
-                });
+                }));
 
-                // Tools menu
-                ui.menu_button("Tools", |ui| {
+                // Tools Menu
+                render_menu_item(ui, MenuId::Tools, "Tools", Box::new(|app, ui| {
                     if ui.button("Plugin Manager").clicked() {
-                        self.show_plugin_manager = true;
-                        ui.close_menu();
+                        app.show_plugin_manager = true;
+                        app.ui_state.active_menu = None;
+                        app.ui_state.menu_expanded = false;
                     }
                     if ui.button("Settings").clicked() {
-                        self.show_settings = true;
-                        ui.close_menu();
+                        app.show_settings = true;
+                        app.ui_state.active_menu = None;
+                        app.ui_state.menu_expanded = false;
                     }
-                });
+                }));
 
-                // Help menu
-                ui.menu_button("Help", |ui| {
+                // Help Menu
+                render_menu_item(ui, MenuId::Help, "Help", Box::new(|app, ui| {
                     if ui.button("About Cosmarium").clicked() {
-                        self.show_about = true;
-                        ui.close_menu();
+                        app.show_about = true;
+                        app.ui_state.active_menu = None;
+                        app.ui_state.menu_expanded = false;
                     }
                     if ui.button("Documentation").clicked() {
-                        // TODO: Open documentation
-                        ui.close_menu();
+                        app.ui_state.active_menu = None;
+                        app.ui_state.menu_expanded = false;
                     }
                     if ui.button("Report Issue").clicked() {
-                        // TODO: Open issue tracker
-                        ui.close_menu();
+                        app.ui_state.active_menu = None;
+                        app.ui_state.menu_expanded = false;
                     }
-                });
+                }));
+
             });
         });
+        
+        // Detect click outside menu to close
+        if self.ui_state.active_menu.is_some() {
+            ctx.input(|i| {
+                if i.pointer.any_click() {
+                    // Check if click is outside the top panel
+                    if let Some(pos) = i.pointer.interact_pos() {
+                        // Simple heuristic: if click is below y=100, close menu
+                        // (menu bar is typically at the top)
+                        if pos.y > 100.0 {
+                            self.ui_state.active_menu = None;
+                            self.ui_state.menu_expanded = false;
+                        }
+                    }
+                }
+            });
+        }
     }
+
 
     /// Render the status bar.
     fn render_status_bar(&mut self, ctx: &egui::Context) {

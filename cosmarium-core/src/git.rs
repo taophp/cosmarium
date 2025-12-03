@@ -58,4 +58,28 @@ impl GitIntegration {
         // Return Ok to avoid errors during save
         Ok(())
     }
+
+    /// Get the current branch name.
+    pub fn current_branch(&self) -> Result<String> {
+        let repo = self.repo.to_thread_local();
+        
+        // Try to get HEAD reference
+        match repo.head_ref() {
+            Ok(Some(reference)) => {
+                // Get the branch name from the reference
+                let name = reference.name()
+                    .shorten()
+                    .to_string();
+                Ok(name)
+            }
+            Ok(None) => {
+                // Detached HEAD or no commits yet
+                Ok("HEAD".to_string())
+            }
+            Err(e) => {
+                debug!("Failed to get current branch: {}", e);
+                Ok("unknown".to_string())
+            }
+        }
+    }
 }

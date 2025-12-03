@@ -816,6 +816,11 @@ impl Project {
         &self.path
     }
 
+    /// Get the Git integration if available.
+    pub fn git(&self) -> Option<&GitIntegration> {
+        self.git.as_ref()
+    }
+
     /// Get the project metadata.
     pub fn metadata(&self) -> &ProjectMetadata {
         &self.state.metadata
