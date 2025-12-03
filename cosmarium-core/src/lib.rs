@@ -35,6 +35,7 @@ pub mod git;
 pub mod layout;
 pub mod plugin;
 pub mod project;
+pub mod session;
 
 
 pub use application::Application;
@@ -46,6 +47,7 @@ pub use events::EventBus;
 pub use layout::{Layout, LayoutManager};
 pub use plugin::{PluginManager, PluginRegistry};
 pub use project::{Project, ProjectManager};
+pub use session::Session;
 
 /// Initialize tracing for the application
 ///

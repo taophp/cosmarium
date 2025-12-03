@@ -10,9 +10,10 @@ use cosmarium_plugin_api::{Plugin, PluginContext, PanelPlugin, Event, EventType}
 use cosmarium_markdown_editor::MarkdownEditorPlugin;
 use eframe::egui;
 use std::collections::HashMap;
- use std::sync::Arc;
+use std::sync::Arc;
 use std::time::Instant;
 use uuid::Uuid;
+use cosmarium_core::Session;
 
 /// Main Cosmarium application state
 pub struct Cosmarium {
@@ -28,6 +29,8 @@ pub struct Cosmarium {
     config: Config,
     /// Command line arguments
     args: AppArgs,
+    /// User session data
+    session: Session,
     /// Application startup time
     startup_time: Instant,
     /// Whether to show the about dialog
@@ -122,13 +125,14 @@ impl Cosmarium {
             panel_plugins: HashMap::new(),
             config: Config::default(),
             args,
+            session: Session::load(),
             startup_time: Instant::now(),
             show_about: false,
             show_plugin_manager: false,
             show_settings: false,
             current_project: None,
             active_document_id: None,
-            recent_projects: Vec::new(),
+            recent_projects: Vec::new(), // Will be populated from session
             current_branch: None,
             ui_state: UiState::default(),
             show_new_project_dialog: false,
@@ -148,10 +152,22 @@ impl Cosmarium {
 
         // Load project if specified in args (clone the Option to avoid borrowing `app` across a mutable borrow)
         if let Some(project_path) = app.args.project_path.clone() {
-            if let Err(e) = app.load_project(&project_path) {
-                tracing::error!("Failed to load project {:?}: {}", project_path, e);
+            if let Err(e) = app.open_project_async(project_path) {
+                tracing::error!("Failed to open project from args: {}", e);
+            }
+        } else if app.config.app.restore_session {
+            // Auto-open last project if enabled and no project specified in args
+            if let Some(last_project) = app.session.last_opened_project.clone() {
+                if last_project.exists() {
+                    if let Err(e) = app.open_project_async(last_project) {
+                        tracing::error!("Failed to restore last session: {}", e);
+                    }
+                }
             }
         }
+        
+        // Sync recent projects from session to app state (for UI access)
+        app.recent_projects = app.session.recent_projects.clone();
 
         app
     }
@@ -255,7 +271,7 @@ impl Cosmarium {
             pm.open_project(&path_clone).await
         })?;
         
-        self.current_project = Some(path);
+        self.current_project = Some(path.clone());
         
         // Load first document into editor (if any)
         let project_manager = Arc::clone(&self.core_app.project_manager());
@@ -295,6 +311,16 @@ impl Cosmarium {
         
         // Get current Git branch
         self.current_branch = self.get_current_branch();
+
+        // Update session
+        self.session.add_recent_project(path.clone(), self.config.app.max_recent_projects);
+        self.session.last_opened_project = Some(path);
+        if let Err(e) = self.session.save() {
+            tracing::warn!("Failed to save session: {}", e);
+        }
+        
+        // Update UI list
+        self.recent_projects = self.session.recent_projects.clone();
         
         Ok(())
     }
@@ -387,7 +413,7 @@ impl Cosmarium {
             pm.create_project(&name, &path_buf, &template).await
         })?;
         
-        self.current_project = Some(project_path);
+        self.current_project = Some(project_path.clone());
         
         // Update recent projects list
         let rt2 = tokio::runtime::Runtime::new()
@@ -401,6 +427,14 @@ impl Cosmarium {
         
         // Get current Git branch
         self.current_branch = self.get_current_branch();
+
+        // Update session
+        self.session.add_recent_project(project_path.clone(), self.config.app.max_recent_projects);
+        self.session.last_opened_project = Some(project_path);
+        if let Err(e) = self.session.save() {
+            tracing::warn!("Failed to save session: {}", e);
+        }
+        self.recent_projects = self.session.recent_projects.clone();
         
         Ok(())
     }
@@ -437,30 +471,60 @@ impl Cosmarium {
                     self.ui_state.active_menu = Some(MenuId::Cosmarium);
                 }
                 
-                // Project name button
+                // Project name button (now a submenu)
                 let project_name = self.current_project
                     .as_ref()
                     .and_then(|p| p.file_name())
                     .and_then(|n| n.to_str())
-                    .unwrap_or("No Project");
+                    .unwrap_or("No Project")
+                    .to_string();
                     
-                if ui.button(project_name).clicked() {
-                    // Open project selector
-                    if let Some(path) = rfd::FileDialog::new()
-                        .set_title("Open Project")
-                        .pick_folder()
-                    {
-                        if let Err(e) = self.open_project_async(path) {
-                            tracing::error!("Failed to open project: {}", e);
+                ui.menu_button(project_name, |ui| {
+                    ui.set_min_width(200.0);
+                    ui.with_layout(egui::Layout::top_down_justified(egui::Align::Min), |ui| {
+                        if self.recent_projects.is_empty() {
+                            ui.label("No recent projects");
+                        } else {
+                            let mut path_to_open = None;
+                            for path in &self.recent_projects {
+                                let label = path.file_name()
+                                    .and_then(|n| n.to_str())
+                                    .unwrap_or("Unknown Project");
+                                    
+                                if ui.button(label).clicked() {
+                                    path_to_open = Some(path.clone());
+                                    ui.close_menu();
+                                }
+                            }
+                            
+                            if let Some(path) = path_to_open {
+                                if let Err(e) = self.open_project_async(path) {
+                                    tracing::error!("Failed to open recent project: {}", e);
+                                }
+                            }
                         }
-                    }
-                }
-                
-                // Branch indicator
-                if let Some(branch) = &self.current_branch {
-                    ui.label("•");
-                    ui.label(branch);
-                }
+                        
+                        ui.separator();
+                        
+                        if ui.button("New").clicked() {
+                            ui.close_menu();
+                            self.show_new_project_dialog = true;
+                        }
+                        
+                        if ui.button("Open").clicked() {
+                            ui.close_menu();
+                            // Open project selector
+                            if let Some(path) = rfd::FileDialog::new()
+                                .set_title("Open Project")
+                                .pick_folder()
+                            {
+                                if let Err(e) = self.open_project_async(path) {
+                                    tracing::error!("Failed to open project: {}", e);
+                                }
+                            }
+                        }
+                    });
+                });
             });
         });
     }
@@ -564,32 +628,7 @@ impl Cosmarium {
                         }
                     }
                     
-                    // Recent Projects (Submenu simulation - simplified as section for now)
-                    ui.separator();
-                    ui.label("Open Recent:");
-                    if app.recent_projects.is_empty() {
-                        ui.label("  No recent projects");
-                    } else {
-                        let mut path_to_open = None;
-                        for path in &app.recent_projects {
-                            let label = path.file_name()
-                                .and_then(|n| n.to_str())
-                                .unwrap_or("Unknown Project");
-                                
-                            if ui.button(format!("  {}", label)).clicked() {
-                                path_to_open = Some(path.clone());
-                                app.ui_state.active_menu = None;
-                                app.ui_state.menu_expanded = false;
-                            }
-                        }
-                        
-                        if let Some(path) = path_to_open {
-                            if let Err(e) = app.open_project_async(path) {
-                                tracing::error!("Failed to open recent project: {}", e);
-                            }
-                        }
-                    }
-                    ui.separator();
+
 
                     if ui.button("Save Project").clicked() {
                         if let Err(e) = app.save_current_project() {
