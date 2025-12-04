@@ -1020,6 +1020,53 @@ impl eframe::App for Cosmarium {
             }
         }
 
+        // Keyboard shortcuts (Ctrl+N, Ctrl+O, Ctrl+S, Ctrl+Q)
+        // Keyboard shortcuts (Ctrl+N, Ctrl+O, Ctrl+S, Ctrl+Q)
+        let mut should_quit = false;
+        ctx.input(|input| {
+            if input.modifiers.ctrl {
+                if input.key_pressed(egui::Key::N) {
+                    // New project
+                    self.show_new_project_dialog = true;
+                } else if input.key_pressed(egui::Key::O) {
+                    // Open project (reuse file dialog logic)
+                    if let Some(path) = rfd::FileDialog::new()
+                        .set_title("Open Project")
+                        .pick_folder()
+                    {
+                        if let Err(e) = self.open_project_async(path) {
+                            tracing::error!("Failed to open project via shortcut: {}", e);
+                        }
+                    }
+                } else if input.key_pressed(egui::Key::S) {
+                    // Save current project
+                    if let Err(e) = self.save_current_project() {
+                        tracing::error!("Failed to save project via shortcut: {}", e);
+                    }
+                } else if input.key_pressed(egui::Key::Q) {
+                    // Quit application
+                    should_quit = true;
+                } else if input.key_pressed(egui::Key::Z) {
+                    // Undo
+                    if input.modifiers.shift {
+                        // Redo (Ctrl+Shift+Z)
+                        self.plugin_context.set_shared_state("markdown_editor_action", "redo".to_string());
+                    } else {
+                        // Undo (Ctrl+Z)
+                        self.plugin_context.set_shared_state("markdown_editor_action", "undo".to_string());
+                    }
+                } else if input.key_pressed(egui::Key::Y) {
+                    // Redo (Ctrl+Y)
+                    self.plugin_context.set_shared_state("markdown_editor_action", "redo".to_string());
+                }
+            }
+        });
+
+        if should_quit {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+
+
         // Render UI
         if self.ui_state.show_menu_bar {
             self.render_menu_bar(ctx, frame);

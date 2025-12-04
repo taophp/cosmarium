@@ -83,19 +83,23 @@ impl MarkdownEditor {
     }
 
     /// Undo the last change.
-    pub fn undo(&mut self) -> Option<String> {
-        self.undo_history.pop().map(|content| {
-            self.redo_history.push(content.clone());
-            content
-        })
+    pub fn undo(&mut self, current_content: String) -> Option<String> {
+        if let Some(prev) = self.undo_history.pop() {
+            self.redo_history.push(current_content);
+            Some(prev)
+        } else {
+            None
+        }
     }
 
     /// Redo the last undone change.
-    pub fn redo(&mut self) -> Option<String> {
-        self.redo_history.pop().map(|content| {
-            self.undo_history.push(content.clone());
-            content
-        })
+    pub fn redo(&mut self, current_content: String) -> Option<String> {
+        if let Some(next) = self.redo_history.pop() {
+            self.undo_history.push(current_content);
+            Some(next)
+        } else {
+            None
+        }
     }
 
     /// Check if undo is available.
@@ -149,17 +153,19 @@ mod tests {
     fn test_undo_redo() {
         let mut editor = MarkdownEditor::new();
         
+        // Simulate change from "first state" to "second state"
         editor.add_to_history("first state".to_string());
-        editor.add_to_history("second state".to_string());
         
         assert!(editor.can_undo());
         assert!(!editor.can_redo());
         
-        let undone = editor.undo().unwrap();
-        assert_eq!(undone, "second state");
+        // Undo from "second state"
+        let undone = editor.undo("second state".to_string()).unwrap();
+        assert_eq!(undone, "first state");
         assert!(editor.can_redo());
         
-        let redone = editor.redo().unwrap();
+        // Redo from "first state"
+        let redone = editor.redo("first state".to_string()).unwrap();
         assert_eq!(redone, "second state");
         assert!(!editor.can_redo());
     }

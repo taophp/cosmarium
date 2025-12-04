@@ -91,6 +91,8 @@ pub struct MarkdownEditorPlugin {
     /// Preview renderer
     #[cfg(feature = "live-preview")]
     preview: Option<preview::PreviewRenderer>,
+    /// Editor state for history management
+    editor_state: editor::MarkdownEditor,
 }
 
 impl Default for MarkdownEditorPlugin {
@@ -120,6 +122,7 @@ impl MarkdownEditorPlugin {
             highlighter: None,
             #[cfg(feature = "live-preview")]
             preview: None,
+            editor_state: editor::MarkdownEditor::new(),
         }
     }
 
@@ -244,6 +247,9 @@ impl MarkdownEditorPlugin {
         
         ui.separator();
         
+        // Capture old content before editing
+        let old_content = self.content.clone();
+
         // Main text editor
         let response = ui.add_sized(
             ui.available_size(),
@@ -261,6 +267,9 @@ impl MarkdownEditorPlugin {
             // Emit document changed event
             let event = Event::new(EventType::DocumentChanged, "Document content modified");
             ctx.emit_event(event);
+
+            // Push OLD content to history
+            self.editor_state.add_to_history(old_content);
         }
         
         // Show statistics panel at the bottom
@@ -335,6 +344,31 @@ impl Plugin for MarkdownEditorPlugin {
 
     fn update(&mut self, ctx: &mut PluginContext) -> Result<()> {
         self.handle_auto_save(ctx);
+        
+        // Check for undo/redo commands from shared state
+        if let Some(action) = ctx.get_shared_state::<String>("markdown_editor_action") {
+            match action.as_str() {
+                "undo" => {
+                    if let Some(previous_content) = self.editor_state.undo(self.content.clone()) {
+                        self.content = previous_content;
+                        self.has_changes = true;
+                        self.update_stats();
+                    }
+                    // Clear the action so we don't repeat it
+                    ctx.set_shared_state("markdown_editor_action", "".to_string());
+                }
+                "redo" => {
+                    if let Some(next_content) = self.editor_state.redo(self.content.clone()) {
+                        self.content = next_content;
+                        self.has_changes = true;
+                        self.update_stats();
+                    }
+                    ctx.set_shared_state("markdown_editor_action", "".to_string());
+                }
+                _ => {}
+            }
+        }
+        
         Ok(())
     }
 }
