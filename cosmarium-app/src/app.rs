@@ -599,19 +599,19 @@ impl Cosmarium {
                         app.ui_state.active_menu = None;
                     }
                     ui.separator();
-                    if ui.button("Exit").clicked() {
+                    if ui.add(egui::Button::new("Exit").shortcut_text(egui::RichText::new("Ctrl+Q").size(12.0).weak())).clicked() {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                 }));
 
                 // File Menu
                 render_menu_item(ui, MenuId::File, "File", Box::new(|app, ui| {
-                    if ui.button("New Project").clicked() {
+                    if ui.add(egui::Button::new("New Project").shortcut_text(egui::RichText::new("Ctrl+N").size(12.0).weak())).clicked() {
                         app.show_new_project_dialog = true;
                         app.ui_state.active_menu = None;
                         app.ui_state.menu_expanded = false;
                     }
-                    if ui.button("Open Project").clicked() {
+                    if ui.add(egui::Button::new("Open Project").shortcut_text(egui::RichText::new("Ctrl+O").size(12.0).weak())).clicked() {
                         // We need to close the menu before opening the dialog to avoid UI glitches
                         app.ui_state.active_menu = None;
                         app.ui_state.menu_expanded = false;
@@ -630,7 +630,7 @@ impl Cosmarium {
                     
 
 
-                    if ui.button("Save Project").clicked() {
+                    if ui.add(egui::Button::new("Save Project").shortcut_text(egui::RichText::new("Ctrl+S").size(12.0).weak())).clicked() {
                         if let Err(e) = app.save_current_project() {
                             tracing::error!("Failed to save project: {}", e);
                         }
@@ -646,8 +646,8 @@ impl Cosmarium {
 
                 // Edit Menu
                 render_menu_item(ui, MenuId::Edit, "Edit", Box::new(|app, ui| {
-                    if ui.button("Undo").clicked() { app.ui_state.active_menu = None; app.ui_state.menu_expanded = false; }
-                    if ui.button("Redo").clicked() { app.ui_state.active_menu = None; app.ui_state.menu_expanded = false; }
+                    if ui.add(egui::Button::new("Undo").shortcut_text(egui::RichText::new("Ctrl+Z").size(12.0).weak())).clicked() { app.ui_state.active_menu = None; app.ui_state.menu_expanded = false; }
+                    if ui.add(egui::Button::new("Redo").shortcut_text(egui::RichText::new("Ctrl+Y").size(12.0).weak())).clicked() { app.ui_state.active_menu = None; app.ui_state.menu_expanded = false; }
                     ui.separator();
                     if ui.button("Cut").clicked() { app.ui_state.active_menu = None; app.ui_state.menu_expanded = false; }
                     if ui.button("Copy").clicked() { app.ui_state.active_menu = None; app.ui_state.menu_expanded = false; }
