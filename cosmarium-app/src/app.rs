@@ -660,6 +660,9 @@ impl Cosmarium {
                     let mut panels_to_toggle = Vec::new();
                     
                     for (panel_name, panel_plugin) in &app.panel_plugins {
+                        if !panel_plugin.is_closable() {
+                            continue;
+                        }
                         let is_open = app.ui_state.open_panels.get(panel_name).unwrap_or(&false);
                         let mut open = *is_open;
                         
@@ -806,7 +809,7 @@ impl Cosmarium {
     fn has_panels_in_position(&self, position: cosmarium_plugin_api::PanelPosition) -> bool {
         self.panel_plugins.iter().any(|(name, plugin)| {
             plugin.default_position() == position &&
-            *self.ui_state.open_panels.get(name).unwrap_or(&false)
+            (!plugin.is_closable() || *self.ui_state.open_panels.get(name).unwrap_or(&false))
         })
     }
 
@@ -815,7 +818,7 @@ impl Cosmarium {
         let panels_to_render: Vec<String> = self.panel_plugins.iter()
             .filter_map(|(name, plugin)| {
                 if plugin.default_position() == position &&
-                   *self.ui_state.open_panels.get(name).unwrap_or(&false) {
+                   (!plugin.is_closable() || *self.ui_state.open_panels.get(name).unwrap_or(&false)) {
                     Some(name.clone())
                 } else {
                     None
@@ -833,14 +836,17 @@ impl Cosmarium {
 
         for panel_name in &panels_to_render {
             if let Some(panel) = self.panel_plugins.get_mut(panel_name) {
-                // Create a collapsing header for each panel
-                let title = panel.panel_title().to_string();
-                let header_response = ui.collapsing(title, |ui| {
+                if !panel.is_closable() {
+                    // Render directly without header for non-closable panels (like Editor)
                     panel.render_panel(ui, &mut self.plugin_context);
-                });
+                } else {
+                    // Create a collapsing header for each panel
+                    let title = panel.panel_title().to_string();
+                    let header_response = ui.collapsing(title, |ui| {
+                        panel.render_panel(ui, &mut self.plugin_context);
+                    });
 
-                // Handle panel closing if closable
-                if panel.is_closable() {
+                    // Handle panel closing if closable
                     header_response.header_response.context_menu(|ui| {
                         if ui.button("Close Panel").clicked() {
                             self.ui_state.open_panels.insert(panel_name.clone(), false);

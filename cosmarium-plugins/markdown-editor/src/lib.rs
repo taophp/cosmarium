@@ -33,9 +33,9 @@ use cosmarium_plugin_api::{
     Plugin, PluginInfo, PluginType, PluginContext, PanelPlugin, 
     Event, EventType, Result
 };
-use egui::Ui;
+use egui::{Ui, Color32, Vec2};
 use serde::{Deserialize, Serialize};
-
+use egui_dock::{DockArea, Style, TabViewer, DockState, NodeIndex, SurfaceIndex, Split, Node};
 
 /// Configuration for the markdown editor plugin
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,8 +73,8 @@ impl Default for EditorConfig {
     }
 }
 
-/// The main markdown editor plugin
-pub struct MarkdownEditorPlugin {
+/// Core state of the editor, separated for borrow checker reasons
+pub struct EditorCore {
     /// Current document content
     content: String,
     /// Plugin configuration
@@ -93,25 +93,14 @@ pub struct MarkdownEditorPlugin {
     preview: Option<preview::PreviewRenderer>,
     /// Editor state for history management
     editor_state: editor::MarkdownEditor,
+    /// ID of the text edit widget for state retrieval
+    text_edit_id: Option<egui::Id>,
+    /// Current dynamic title of the editor
+    current_title: String,
 }
 
-impl Default for MarkdownEditorPlugin {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl MarkdownEditorPlugin {
-    /// Create a new markdown editor plugin instance.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// use cosmarium_markdown_editor::MarkdownEditorPlugin;
-    ///
-    /// let editor = MarkdownEditorPlugin::new();
-    /// ```
-    pub fn new() -> Self {
+impl EditorCore {
+    fn new() -> Self {
         Self {
             content: String::new(),
             config: EditorConfig::default(),
@@ -123,158 +112,48 @@ impl MarkdownEditorPlugin {
             #[cfg(feature = "live-preview")]
             preview: None,
             editor_state: editor::MarkdownEditor::new(),
+            text_edit_id: None,
+            current_title: "Untitled".to_string(),
         }
-    }
-
-    /// Get the current document content.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// use cosmarium_markdown_editor::MarkdownEditorPlugin;
-    ///
-    /// let editor = MarkdownEditorPlugin::new();
-    /// let content = editor.content();
-    /// assert!(content.is_empty());
-    /// ```
-    pub fn content(&self) -> &str {
-        &self.content
-    }
-
-    /// Set the document content.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// use cosmarium_markdown_editor::MarkdownEditorPlugin;
-    ///
-    /// let mut editor = MarkdownEditorPlugin::new();
-    /// editor.set_content("# Hello World\n\nThis is a test document.");
-    /// assert_eq!(editor.content().lines().next(), Some("# Hello World"));
-    /// ```
-    pub fn set_content<S: Into<String>>(&mut self, content: S) {
-        self.content = content.into();
-        self.has_changes = true;
-        self.update_stats();
-    }
-
-    /// Check if the document has unsaved changes.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// use cosmarium_markdown_editor::MarkdownEditorPlugin;
-    ///
-    /// let mut editor = MarkdownEditorPlugin::new();
-    /// assert!(!editor.has_changes());
-    /// editor.set_content("Some content");
-    /// assert!(editor.has_changes());
-    /// ```
-    pub fn has_changes(&self) -> bool {
-        self.has_changes
-    }
-
-    /// Get the current writing statistics.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// use cosmarium_markdown_editor::MarkdownEditorPlugin;
-    ///
-    /// let mut editor = MarkdownEditorPlugin::new();
-    /// editor.set_content("Hello world! This is a test.");
-    /// let stats = editor.stats();
-    /// assert!(stats.word_count() > 0);
-    /// ```
-    pub fn stats(&self) -> &stats::WritingStats {
-        &self.stats
-    }
-
-    /// Update writing statistics based on current content
-    fn update_stats(&mut self) {
-        self.stats.update(&self.content);
-    }
-
-    /// Handle auto-save if needed
-    fn handle_auto_save(&mut self, ctx: &mut PluginContext) {
-        if !self.has_changes {
-            return;
-        }
-
-        let elapsed = self.last_save.elapsed();
-        if elapsed.as_secs() >= self.config.auto_save_interval {
-            if let Err(e) = self.auto_save(ctx) {
-                tracing::error!("Auto-save failed: {}", e);
-            }
-        }
-    }
-
-    /// Perform auto-save
-    fn auto_save(&mut self, ctx: &mut PluginContext) -> Result<()> {
-        // Save content to shared state
-        ctx.set_shared_state("markdown_editor_content", self.content.clone());
-        
-        // Emit document saved event
-        let event = Event::new(EventType::DocumentSaved, "Auto-saved document");
-        ctx.emit_event(event);
-        
-        self.has_changes = false;
-        self.last_save = std::time::Instant::now();
-        
-        tracing::info!("Document auto-saved");
-        Ok(())
     }
 
     /// Render the main editor UI
     fn render_editor(&mut self, ui: &mut Ui, ctx: &mut PluginContext) {
-        ui.horizontal(|ui| {
-            ui.label("📝");
-            ui.heading("Markdown Editor");
-            
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                // Word count display
-                ui.label(format!("Words: {}", self.stats.word_count()));
-                ui.separator();
-                
-                // Save indicator
-                if self.has_changes {
-                    ui.colored_label(egui::Color32::from_rgb(255, 165, 0), "●");
-                } else {
-                    ui.colored_label(egui::Color32::GREEN, "●");
-                }
-            });
-        });
-        
-        ui.separator();
+
         
         // Capture old content before editing
         let old_content = self.content.clone();
 
-        // Main text editor
-        let response = ui.add_sized(
-            ui.available_size(),
-            egui::TextEdit::multiline(&mut self.content)
-                .font(egui::TextStyle::Monospace)
-                .desired_width(ui.available_width())
-                .desired_rows(25)
-        );
-        
-        // Handle content changes
-        if response.changed() {
-            self.has_changes = true;
-            self.update_stats();
+        // Use bottom_up layout to pin stats bar to bottom and let editor fill the rest
+        ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
+            // 1. Stats bar at the bottom
+            self.render_stats_bar(ui);
+            ui.separator();
             
-            // Emit document changed event
-            let event = Event::new(EventType::DocumentChanged, "Document content modified");
-            ctx.emit_event(event);
+            // 2. Editor fills the remaining space
+            let response = ui.add_sized(
+                ui.available_size(),
+                egui::TextEdit::multiline(&mut self.content)
+                    .font(egui::TextStyle::Monospace)
+                    .desired_width(f32::INFINITY) // Fill width
+            );
+            
+            // Store the ID for later state retrieval
+            self.text_edit_id = Some(response.id);
 
-            // Push OLD content to history
-            self.editor_state.add_to_history(old_content);
-        }
-        
-        // Show statistics panel at the bottom
-        ui.separator();
-        self.render_stats_bar(ui);
+            // Handle content changes
+            if response.changed() {
+                self.has_changes = true;
+                self.update_stats();
+                
+                // Emit document changed event
+                let event = Event::new(EventType::DocumentChanged, "Document content modified");
+                ctx.emit_event(event);
+
+                // Push OLD content to history
+                self.editor_state.add_to_history(old_content);
+            }
+        });
     }
 
     /// Render the statistics bar
@@ -293,6 +172,156 @@ impl MarkdownEditorPlugin {
             }
         });
     }
+
+    /// Update writing statistics based on current content
+    fn update_stats(&mut self) {
+        self.stats.update(&self.content);
+    }
+
+    /// Get dynamic title based on cursor position
+    fn get_dynamic_title(&self, ctx: &egui::Context) -> String {
+        if let Some(id) = self.text_edit_id {
+            if let Some(state) = egui::TextEdit::load_state(ctx, id) {
+                if let Some(range) = state.ccursor_range() {
+                    let cursor_idx = range.primary.index;
+                    
+                    // Convert char index to byte index to avoid panics with multi-byte chars
+                    let byte_index = self.content.char_indices()
+                        .map(|(i, _)| i)
+                        .nth(cursor_idx)
+                        .unwrap_or(self.content.len());
+                        
+                    // Find the nearest heading before cursor
+                    let content_before = &self.content[..byte_index];
+                    for line in content_before.lines().rev() {
+                        let trimmed = line.trim();
+                        if trimmed.starts_with('#') {
+                            return trimmed.trim_start_matches('#').trim().to_string();
+                        }
+                    }
+                }
+            }
+        }
+        // Fallback to project name or default
+        "Untitled".to_string()
+    }
+}
+
+/// Actions that can be performed on the dock state
+enum DockAction {
+    SplitHorizontal(SurfaceIndex, NodeIndex),
+    SplitVertical(SurfaceIndex, NodeIndex),
+}
+
+/// The main markdown editor plugin
+pub struct MarkdownEditorPlugin {
+    core: EditorCore,
+    /// Docking tree for layout management
+    tree: DockState<String>,
+}
+
+impl Default for MarkdownEditorPlugin {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+struct EditorViewer<'a> {
+    core: &'a mut EditorCore,
+    ctx: &'a mut PluginContext,
+    pending_action: &'a mut Option<DockAction>,
+}
+
+impl<'a> TabViewer for EditorViewer<'a> {
+    type Tab = String;
+
+    fn title(&mut self, tab: &mut Self::Tab) -> egui::WidgetText {
+        // Use dynamic title if available, otherwise tab name
+        if tab == "Main View" {
+            self.core.current_title.clone().into()
+        } else {
+            tab.as_str().into()
+        }
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, _tab: &mut Self::Tab) {
+        self.core.render_editor(ui, self.ctx);
+    }
+
+    fn context_menu(&mut self, ui: &mut Ui, _tab: &mut Self::Tab, surface: SurfaceIndex, node: NodeIndex) {
+        if ui.button("Split Horizontal").clicked() {
+            *self.pending_action = Some(DockAction::SplitHorizontal(surface, node));
+            ui.close_menu();
+        }
+        if ui.button("Split Vertical").clicked() {
+            *self.pending_action = Some(DockAction::SplitVertical(surface, node));
+            ui.close_menu();
+        }
+
+        // Hack to hide default items (Close, Eject) added by egui_dock
+        let style = ui.style_mut();
+        style.visuals.widgets.inactive.fg_stroke = egui::Stroke::NONE;
+        style.visuals.widgets.active.fg_stroke = egui::Stroke::NONE;
+        style.visuals.widgets.hovered.fg_stroke = egui::Stroke::NONE;
+        style.visuals.widgets.inactive.bg_fill = Color32::TRANSPARENT;
+        style.visuals.widgets.active.bg_fill = Color32::TRANSPARENT;
+        style.visuals.widgets.hovered.bg_fill = Color32::TRANSPARENT;
+        style.spacing.item_spacing = Vec2::ZERO;
+        style.spacing.button_padding = Vec2::ZERO;
+    }
+}
+
+impl MarkdownEditorPlugin {
+    /// Create a new markdown editor plugin instance.
+    pub fn new() -> Self {
+        let tree = DockState::new(vec!["Main View".to_string()]);
+        
+        Self {
+            core: EditorCore::new(),
+            tree,
+        }
+    }
+
+    pub fn content(&self) -> &str {
+        &self.core.content
+    }
+
+    pub fn set_content<S: Into<String>>(&mut self, content: S) {
+        self.core.content = content.into();
+        self.core.has_changes = true;
+        self.core.update_stats();
+    }
+
+    pub fn has_changes(&self) -> bool {
+        self.core.has_changes
+    }
+
+    pub fn stats(&self) -> &stats::WritingStats {
+        &self.core.stats
+    }
+
+    fn handle_auto_save(&mut self, ctx: &mut PluginContext) {
+        if !self.core.has_changes {
+            return;
+        }
+
+        let elapsed = self.core.last_save.elapsed();
+        if elapsed.as_secs() >= self.core.config.auto_save_interval {
+            if let Err(e) = self.auto_save(ctx) {
+                tracing::error!("Auto-save failed: {}", e);
+            }
+        }
+    }
+
+    fn auto_save(&mut self, ctx: &mut PluginContext) -> Result<()> {
+        ctx.set_shared_state("markdown_editor_content", self.core.content.clone());
+        let event = Event::new(EventType::DocumentSaved, "Auto-saved document");
+        ctx.emit_event(event);
+        self.core.has_changes = false;
+        self.core.last_save = std::time::Instant::now();
+        tracing::info!("Document auto-saved");
+        Ok(())
+    }
 }
 
 impl Plugin for MarkdownEditorPlugin {
@@ -308,30 +337,25 @@ impl Plugin for MarkdownEditorPlugin {
     }
 
     fn initialize(&mut self, ctx: &mut PluginContext) -> Result<()> {
-        // Load configuration from context
         if let Some(config) = ctx.get_config::<EditorConfig>("markdown_editor") {
-            self.config = config;
+            self.core.config = config;
         } else {
-            // Save default config
-            ctx.set_config("markdown_editor", &self.config);
+            ctx.set_config("markdown_editor", &self.core.config);
         }
 
-        // Initialize syntax highlighter if enabled
         #[cfg(feature = "syntax-highlighting")]
-        if self.config.syntax_highlighting {
-            self.highlighter = Some(syntax::MarkdownHighlighter::new()?);
+        if self.core.config.syntax_highlighting {
+            self.core.highlighter = Some(syntax::MarkdownHighlighter::new()?);
         }
 
-        // Initialize preview renderer if enabled
         #[cfg(feature = "live-preview")]
-        if self.config.live_preview {
-            self.preview = Some(preview::PreviewRenderer::new());
+        if self.core.config.live_preview {
+            self.core.preview = Some(preview::PreviewRenderer::new());
         }
 
-        // Load existing content if available
         if let Some(content) = ctx.get_shared_state::<String>("markdown_editor_content") {
-            self.content = content;
-            self.update_stats();
+            self.core.content = content;
+            self.core.update_stats();
         }
 
         tracing::info!("Markdown editor plugin initialized");
@@ -345,23 +369,21 @@ impl Plugin for MarkdownEditorPlugin {
     fn update(&mut self, ctx: &mut PluginContext) -> Result<()> {
         self.handle_auto_save(ctx);
         
-        // Check for undo/redo commands from shared state
         if let Some(action) = ctx.get_shared_state::<String>("markdown_editor_action") {
             match action.as_str() {
                 "undo" => {
-                    if let Some(previous_content) = self.editor_state.undo(self.content.clone()) {
-                        self.content = previous_content;
-                        self.has_changes = true;
-                        self.update_stats();
+                    if let Some(previous_content) = self.core.editor_state.undo(self.core.content.clone()) {
+                        self.core.content = previous_content;
+                        self.core.has_changes = true;
+                        self.core.update_stats();
                     }
-                    // Clear the action so we don't repeat it
                     ctx.set_shared_state("markdown_editor_action", "".to_string());
                 }
                 "redo" => {
-                    if let Some(next_content) = self.editor_state.redo(self.content.clone()) {
-                        self.content = next_content;
-                        self.has_changes = true;
-                        self.update_stats();
+                    if let Some(next_content) = self.core.editor_state.redo(self.core.content.clone()) {
+                        self.core.content = next_content;
+                        self.core.has_changes = true;
+                        self.core.update_stats();
                     }
                     ctx.set_shared_state("markdown_editor_action", "".to_string());
                 }
@@ -375,20 +397,36 @@ impl Plugin for MarkdownEditorPlugin {
 
 impl PanelPlugin for MarkdownEditorPlugin {
     fn panel_title(&self) -> &str {
-        "Markdown Editor"
+        "Editor"
     }
 
     fn render_panel(&mut self, ui: &mut Ui, ctx: &mut PluginContext) {
-        if self.config.distraction_free {
-            // In distraction-free mode, show only the editor
-            ui.add_sized(
-                ui.available_size(),
-                egui::TextEdit::multiline(&mut self.content)
-                    .font(egui::TextStyle::Monospace)
-                    .desired_width(ui.available_width())
-            );
-        } else {
-            self.render_editor(ui, ctx);
+        // Update dynamic title for the active tab
+        self.core.current_title = self.core.get_dynamic_title(ui.ctx());
+        
+        let mut pending_action = None;
+        
+        let mut viewer = EditorViewer {
+            core: &mut self.core,
+            ctx,
+            pending_action: &mut pending_action,
+        };
+        
+        DockArea::new(&mut self.tree)
+            .style(Style::from_egui(ui.style().as_ref()))
+            .show(ui.ctx(), &mut viewer);
+            
+        // Handle any pending actions from context menus
+        if let Some(action) = pending_action {
+            let new_tab = format!("Editor {}", self.tree.iter_all_tabs().count() + 1);
+            match action {
+                DockAction::SplitHorizontal(surface, node) => {
+                    self.tree.split((surface, node), Split::Right, 0.5, Node::leaf(new_tab));
+                }
+                DockAction::SplitVertical(surface, node) => {
+                    self.tree.split((surface, node), Split::Below, 0.5, Node::leaf(new_tab));
+                }
+            }
         }
     }
 
@@ -406,11 +444,11 @@ impl PanelPlugin for MarkdownEditorPlugin {
     }
 
     fn default_open(&self) -> bool {
-        true // Main editor should be open by default
+        true
     }
 
     fn is_closable(&self) -> bool {
-        false // Core editor should not be closable
+        false
     }
 
     fn context_menu_items(&self) -> Vec<cosmarium_plugin_api::PanelContextMenuItem> {
@@ -420,9 +458,9 @@ impl PanelPlugin for MarkdownEditorPlugin {
             PanelContextMenuItem::new("save", "Save Document"),
             PanelContextMenuItem::new("export", "Export..."),
             PanelContextMenuItem::separator(),
-            PanelContextMenuItem::new("word_wrap", if self.config.word_wrap { "Disable Word Wrap" } else { "Enable Word Wrap" }),
-            PanelContextMenuItem::new("line_numbers", if self.config.show_line_numbers { "Hide Line Numbers" } else { "Show Line Numbers" }),
-            PanelContextMenuItem::new("distraction_free", if self.config.distraction_free { "Exit Focus Mode" } else { "Enter Focus Mode" }),
+            PanelContextMenuItem::new("word_wrap", if self.core.config.word_wrap { "Disable Word Wrap" } else { "Enable Word Wrap" }),
+            PanelContextMenuItem::new("line_numbers", if self.core.config.show_line_numbers { "Hide Line Numbers" } else { "Show Line Numbers" }),
+            PanelContextMenuItem::new("distraction_free", if self.core.config.distraction_free { "Exit Focus Mode" } else { "Enter Focus Mode" }),
             PanelContextMenuItem::separator(),
             PanelContextMenuItem::new("settings", "Editor Settings"),
         ]
@@ -434,16 +472,16 @@ impl PanelPlugin for MarkdownEditorPlugin {
                 self.auto_save(ctx)?;
             }
             "word_wrap" => {
-                self.config.word_wrap = !self.config.word_wrap;
-                ctx.set_config("markdown_editor", &self.config);
+                self.core.config.word_wrap = !self.core.config.word_wrap;
+                ctx.set_config("markdown_editor", &self.core.config);
             }
             "line_numbers" => {
-                self.config.show_line_numbers = !self.config.show_line_numbers;
-                ctx.set_config("markdown_editor", &self.config);
+                self.core.config.show_line_numbers = !self.core.config.show_line_numbers;
+                ctx.set_config("markdown_editor", &self.core.config);
             }
             "distraction_free" => {
-                self.config.distraction_free = !self.config.distraction_free;
-                ctx.set_config("markdown_editor", &self.config);
+                self.core.config.distraction_free = !self.core.config.distraction_free;
+                ctx.set_config("markdown_editor", &self.core.config);
             }
             _ => {
                 tracing::warn!("Unhandled context menu item: {}", item_id);
