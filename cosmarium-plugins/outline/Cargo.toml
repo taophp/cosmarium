@@ -1,0 +1,23 @@
+[package]
+name = "cosmarium-outline"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Outline plugin for Cosmarium"
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+cosmarium-plugin-api = { path = "../../cosmarium-plugin-api" }
+egui = { workspace = true }
+serde = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+pulldown-cmark = "0.9"
+egui_ltreeview = "0.1"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
