@@ -22,7 +22,7 @@ pulldown-cmark = { version = "0.9", optional = true }
 syntect = { version = "5.0", optional = true }
 regex = "1.10"
 chrono = { version = "0.4", features = ["serde"] }
-egui_dock = "0.9"
+egui_dock = "0.18"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }

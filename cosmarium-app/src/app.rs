@@ -7,6 +7,7 @@
 use crate::AppArgs;
 use cosmarium_core::{Application, PluginManager, Layout, LayoutManager, Config, Result};
 use cosmarium_plugin_api::{Plugin, PluginContext, PanelPlugin, Event, EventType};
+use cosmarium_outline::OutlinePlugin;
 use cosmarium_markdown_editor::MarkdownEditorPlugin;
 use eframe::egui;
 use std::collections::HashMap;
@@ -91,6 +92,8 @@ struct UiState {
     active_menu: Option<MenuId>,
     /// Current theme name
     current_theme: String,
+    /// Currently active panel in the left sidebar
+    active_left_panel: Option<String>,
 }
 
 impl Default for UiState {
@@ -98,6 +101,7 @@ impl Default for UiState {
         Self {
             open_panels: HashMap::new(),
             left_panel_width: 250.0,
+            active_left_panel: None,
             right_panel_width: 300.0,
             bottom_panel_height: 200.0,
             show_menu_bar: true,
@@ -219,6 +223,14 @@ impl Cosmarium {
         
         // Mark the editor panel as open by default
         self.ui_state.open_panels.insert(plugin_name, true);
+
+        // Load outline plugin
+        let mut outline_plugin = OutlinePlugin::new();
+        outline_plugin.initialize(&mut self.plugin_context)?;
+
+        let outline_plugin_name = outline_plugin.info().name.clone();
+        self.panel_plugins.insert(outline_plugin_name.clone(), Box::new(outline_plugin));
+        // Outline panel is not open by default, so no need to add to open_panels
 
         tracing::info!("Core plugins loaded");
         Ok(())
@@ -577,7 +589,7 @@ impl Cosmarium {
                             ui.memory_mut(|m| m.open_popup(popup_id));
                         }
                         
-                        egui::popup::popup_below_widget(ui, popup_id, &button_response, |ui| {
+                        egui::popup_below_widget(ui, popup_id, &button_response, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
                             ui.set_min_width(150.0);
                             ui.with_layout(egui::Layout::top_down_justified(egui::Align::Min), |ui| {
                                 content(self, ui);
@@ -756,6 +768,20 @@ impl Cosmarium {
                     ui.separator();
                 }
 
+                // Editor stats (if available from shared state)
+                if let Some(word_count) = self.plugin_context.get_shared_state::<usize>("editor_word_count") {
+                    ui.label(format!("Words: {}", word_count));
+                    ui.separator();
+                }
+                if let Some(char_count) = self.plugin_context.get_shared_state::<usize>("editor_char_count") {
+                    ui.label(format!("Characters: {}", char_count));
+                    ui.separator();
+                }
+                if let Some(para_count) = self.plugin_context.get_shared_state::<usize>("editor_para_count") {
+                    ui.label(format!("Paragraphs: {}", para_count));
+                    ui.separator();
+                }
+
                 // Plugin status
                 ui.label(format!("🔌 {} plugins", self.panel_plugins.len()));
                 
@@ -771,9 +797,13 @@ impl Cosmarium {
     fn render_panels(&mut self, ctx: &egui::Context) {
         // Left panel
         if self.has_panels_in_position(cosmarium_plugin_api::PanelPosition::Left) {
+            let mut frame = egui::Frame::side_top_panel(&ctx.style());
+            frame.inner_margin.bottom = 0;
+            
             egui::SidePanel::left("left_panel")
                 .width_range(200.0..=400.0)
                 .default_width(self.ui_state.left_panel_width)
+                .frame(frame)
                 .show(ctx, |ui| {
                     self.render_panels_in_position(ui, cosmarium_plugin_api::PanelPosition::Left);
                 });
@@ -808,8 +838,17 @@ impl Cosmarium {
     /// Check if there are any panels in the specified position that should be shown.
     fn has_panels_in_position(&self, position: cosmarium_plugin_api::PanelPosition) -> bool {
         self.panel_plugins.iter().any(|(name, plugin)| {
-            plugin.default_position() == position &&
-            (!plugin.is_closable() || *self.ui_state.open_panels.get(name).unwrap_or(&false))
+            if plugin.default_position() != position {
+                return false;
+            }
+            
+            // For Left panel (Zed-style), we always show the container if plugins exist,
+            // so the tab bar is visible.
+            if position == cosmarium_plugin_api::PanelPosition::Left {
+                return true;
+            }
+
+            !plugin.is_closable() || *self.ui_state.open_panels.get(name).unwrap_or(&false)
         })
     }
 
@@ -817,8 +856,16 @@ impl Cosmarium {
     fn render_panels_in_position(&mut self, ui: &mut egui::Ui, position: cosmarium_plugin_api::PanelPosition) {
         let panels_to_render: Vec<String> = self.panel_plugins.iter()
             .filter_map(|(name, plugin)| {
-                if plugin.default_position() == position &&
-                   (!plugin.is_closable() || *self.ui_state.open_panels.get(name).unwrap_or(&false)) {
+                if plugin.default_position() != position {
+                    return None;
+                }
+
+                // For Left panel (Zed-style), we include all plugins in the list
+                if position == cosmarium_plugin_api::PanelPosition::Left {
+                    return Some(name.clone());
+                }
+
+                if !plugin.is_closable() || *self.ui_state.open_panels.get(name).unwrap_or(&false) {
                     Some(name.clone())
                 } else {
                     None
@@ -834,25 +881,80 @@ impl Cosmarium {
             return;
         }
 
-        for panel_name in &panels_to_render {
-            if let Some(panel) = self.panel_plugins.get_mut(panel_name) {
-                if !panel.is_closable() {
-                    // Render directly without header for non-closable panels (like Editor)
-                    panel.render_panel(ui, &mut self.plugin_context);
-                } else {
-                    // Create a collapsing header for each panel
-                    let title = panel.panel_title().to_string();
-                    let header_response = ui.collapsing(title, |ui| {
+        // Special handling for Left panel (Zed-style tabs)
+        if position == cosmarium_plugin_api::PanelPosition::Left {
+            if panels_to_render.is_empty() { return; }
+
+            // Ensure we have an active panel
+            if self.ui_state.active_left_panel.is_none() || 
+               !panels_to_render.contains(self.ui_state.active_left_panel.as_ref().unwrap()) {
+                self.ui_state.active_left_panel = Some(panels_to_render[0].clone());
+            }
+
+            let active_panel_name = self.ui_state.active_left_panel.clone().unwrap();
+
+            ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
+                // Add spacing at the bottom to avoid overlapping the status bar
+                ui.add_space(10.0);
+                
+                // Render tab bar at the bottom
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0; // Compact tabs
+                    for panel_name in &panels_to_render {
+                        if let Some(panel) = self.panel_plugins.get(panel_name) {
+                            let icon = panel.panel_icon();
+                            let is_active = *panel_name == active_panel_name;
+                            
+                            // Style the tab button
+                            let text = egui::RichText::new(icon)
+                                .size(16.0)
+                                .color(if is_active { ui.visuals().text_color() } else { ui.visuals().weak_text_color() });
+                            
+                            let response = ui.add(egui::Button::new(text).frame(false).min_size(egui::vec2(40.0, 30.0)));
+                            
+                            if response.clicked() {
+                                self.ui_state.active_left_panel = Some(panel_name.clone());
+                            }
+                            
+                            // Tooltip with title
+                            if response.hovered() {
+                                response.on_hover_text(panel.panel_title());
+                            }
+                        }
+                    }
+                });
+                ui.separator();
+
+                // Render active panel content in remaining space
+                if let Some(panel) = self.panel_plugins.get_mut(&active_panel_name) {
+                    // We want the panel to fill the space
+                    ui.with_layout(egui::Layout::top_down_justified(egui::Align::LEFT), |ui| {
                         panel.render_panel(ui, &mut self.plugin_context);
                     });
+                }
+            });
+        } else {
+            // Standard stacking behavior for other positions
+            for panel_name in &panels_to_render {
+                if let Some(panel) = self.panel_plugins.get_mut(panel_name) {
+                    if !panel.is_closable() {
+                        // Render directly without header for non-closable panels (like Editor)
+                        panel.render_panel(ui, &mut self.plugin_context);
+                    } else {
+                        // Create a collapsing header for each panel
+                        let title = panel.panel_title().to_string();
+                        let header_response = ui.collapsing(title, |ui| {
+                            panel.render_panel(ui, &mut self.plugin_context);
+                        });
 
-                    // Handle panel closing if closable
-                    header_response.header_response.context_menu(|ui| {
-                        if ui.button("Close Panel").clicked() {
-                            self.ui_state.open_panels.insert(panel_name.clone(), false);
-                            ui.close_menu();
-                        }
-                    });
+                        // Handle panel closing if closable
+                        header_response.header_response.context_menu(|ui| {
+                            if ui.button("Close Panel").clicked() {
+                                self.ui_state.open_panels.insert(panel_name.clone(), false);
+                                ui.close_menu();
+                            }
+                        });
+                    }
                 }
             }
         }
@@ -1023,6 +1125,13 @@ impl eframe::App for Cosmarium {
         for plugin in self.plugins.values_mut() {
             if let Err(e) = plugin.update(&mut self.plugin_context) {
                 tracing::error!("Plugin update error: {}", e);
+            }
+        }
+        
+        // Update panel plugins
+        for plugin in self.panel_plugins.values_mut() {
+            if let Err(e) = plugin.update(&mut self.plugin_context) {
+                tracing::error!("Panel plugin update error: {}", e);
             }
         }
 

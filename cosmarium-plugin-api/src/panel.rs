@@ -61,6 +61,21 @@ pub trait PanelPlugin: Send + Sync {
     /// ```
     fn panel_title(&self) -> &str;
 
+    /// Get the icon for this panel.
+    ///
+    /// This is used in the panel switcher (e.g. bottom tabs).
+    /// Should return a single character string (emoji) or a short icon code.
+    fn panel_icon(&self) -> &str {
+        "🔌"
+    }
+
+    /// Update the panel state.
+    ///
+    /// This is called once per frame before rendering.
+    fn update(&mut self, _ctx: &mut PluginContext) -> Result<()> {
+        Ok(())
+    }
+
     /// Render the panel's UI content.
     ///
     /// This method is called every frame when the panel is visible.

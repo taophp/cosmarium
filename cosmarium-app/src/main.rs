@@ -137,7 +137,7 @@ fn main() -> anyhow::Result<()> {
             // Configure visuals
             setup_visuals(&cc.egui_ctx);
             
-            Box::new(app::Cosmarium::new(cc, args.clone()))
+            Ok(Box::new(app::Cosmarium::new(cc, args.clone())))
         }),
     );
 
@@ -164,7 +164,7 @@ fn main() {
                 Box::new(|cc| {
                     setup_custom_fonts(&cc.egui_ctx);
                     setup_visuals(&cc.egui_ctx);
-                    Box::new(app::Cosmarium::new(cc, AppArgs::default()))
+                    Ok(Box::new(app::Cosmarium::new(cc, AppArgs::default())))
                 }),
             )
             .await

@@ -48,13 +48,13 @@ pub struct EditorConfig {
     pub font_size: f32,
     /// Tab size in spaces
     pub tab_size: usize,
-    /// Word wrap enabled
+    /// Word wrap
     pub word_wrap: bool,
     /// Auto-save interval in seconds
     pub auto_save_interval: u64,
     /// Show line numbers
     pub show_line_numbers: bool,
-    /// Distraction-free mode
+    /// Distraction free mode
     pub distraction_free: bool,
 }
 
@@ -67,36 +67,22 @@ impl Default for EditorConfig {
             tab_size: 4,
             word_wrap: true,
             auto_save_interval: 30,
-            show_line_numbers: false,
+            show_line_numbers: true,
             distraction_free: false,
         }
     }
 }
 
-/// Core state of the editor, separated for borrow checker reasons
-pub struct EditorCore {
-    /// Current document content
+/// Core editor logic separated from UI
+struct EditorCore {
     content: String,
-    /// Plugin configuration
     config: EditorConfig,
-    /// Whether the document has unsaved changes
-    has_changes: bool,
-    /// Last auto-save timestamp
-    last_save: std::time::Instant,
-    /// Word count and statistics
     stats: stats::WritingStats,
-    /// Syntax highlighter
-    #[cfg(feature = "syntax-highlighting")]
-    highlighter: Option<syntax::MarkdownHighlighter>,
-    /// Preview renderer
-    #[cfg(feature = "live-preview")]
-    preview: Option<preview::PreviewRenderer>,
-    /// Editor state for history management
-    editor_state: editor::MarkdownEditor,
-    /// ID of the text edit widget for state retrieval
+    has_changes: bool,
     text_edit_id: Option<egui::Id>,
-    /// Current dynamic title of the editor
+    editor_state: editor::MarkdownEditor,
     current_title: String,
+    last_save: std::time::Instant,
 }
 
 impl EditorCore {
@@ -104,16 +90,12 @@ impl EditorCore {
         Self {
             content: String::new(),
             config: EditorConfig::default(),
+            stats: stats::WritingStats::default(),
             has_changes: false,
-            last_save: std::time::Instant::now(),
-            stats: stats::WritingStats::new(),
-            #[cfg(feature = "syntax-highlighting")]
-            highlighter: None,
-            #[cfg(feature = "live-preview")]
-            preview: None,
-            editor_state: editor::MarkdownEditor::new(),
             text_edit_id: None,
+            editor_state: editor::MarkdownEditor::new(),
             current_title: "Untitled".to_string(),
+            last_save: std::time::Instant::now(),
         }
     }
 
@@ -124,36 +106,81 @@ impl EditorCore {
         // Capture old content before editing
         let old_content = self.content.clone();
 
-        // Use bottom_up layout to pin stats bar to bottom and let editor fill the rest
-        ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-            // 1. Stats bar at the bottom
-            self.render_stats_bar(ui);
-            ui.separator();
-            
-            // 2. Editor fills the remaining space
-            let response = ui.add_sized(
+        // Calculate row height for scrolling
+        let row_height = ui.text_style_height(&egui::TextStyle::Monospace);
+        
+        let mut scroll_area = egui::ScrollArea::vertical();
+        
+        // Handle goto line request by setting scroll offset
+        if let Some(target_line) = ctx.get_shared_state::<usize>("markdown_editor_goto_line") {
+            if target_line > 0 {
+                let scroll_offset = (target_line as f32 - 1.0) * row_height;
+                scroll_area = scroll_area.vertical_scroll_offset(scroll_offset);
+                
+                // Also move cursor to that line
+                let char_idx = self.content.lines()
+                    .take(target_line - 1)
+                    .map(|l| l.chars().count() + 1)
+                    .sum::<usize>();
+                    
+                if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), self.text_edit_id.unwrap_or(egui::Id::new("editor"))) {
+                    let ccursor = egui::text::CCursor::new(char_idx);
+                    state.cursor.set_char_range(Some(egui::text::CCursorRange::one(ccursor)));
+                    egui::TextEdit::store_state(ui.ctx(), self.text_edit_id.unwrap_or(egui::Id::new("editor")), state);
+                }
+                
+                // Clear request
+                ctx.set_shared_state("markdown_editor_goto_line", 0usize);
+            }
+        }
+
+        let output = scroll_area.show(ui, |ui| {
+            ui.add_sized(
                 ui.available_size(),
                 egui::TextEdit::multiline(&mut self.content)
                     .font(egui::TextStyle::Monospace)
-                    .desired_width(f32::INFINITY) // Fill width
-            );
-            
-            // Store the ID for later state retrieval
-            self.text_edit_id = Some(response.id);
-
-            // Handle content changes
-            if response.changed() {
-                self.has_changes = true;
-                self.update_stats();
-                
-                // Emit document changed event
-                let event = Event::new(EventType::DocumentChanged, "Document content modified");
-                ctx.emit_event(event);
-
-                // Push OLD content to history
-                self.editor_state.add_to_history(old_content);
-            }
+                    .desired_width(f32::INFINITY)
+                    .lock_focus(true)
+            )
         });
+        
+        let response = output.inner;
+        
+        // Request focus on first render or when clicked
+        if response.clicked() || self.text_edit_id.is_none() {
+            response.request_focus();
+        }
+        
+        // Store the ID for later state retrieval
+        self.text_edit_id = Some(response.id);
+
+        // Handle content changes
+        if response.changed() {
+            self.has_changes = true;
+            self.update_stats();
+            
+            // Emit document changed event
+            let event = Event::new(EventType::DocumentChanged, "Document content modified");
+            ctx.emit_event(event);
+
+            // Push OLD content to history
+            self.editor_state.add_to_history(old_content);
+        }
+        
+        // Publish stats to shared state for status bar
+        ctx.set_shared_state("editor_word_count", self.stats.word_count());
+        ctx.set_shared_state("editor_char_count", self.stats.char_count());
+        ctx.set_shared_state("editor_para_count", self.stats.paragraph_count());
+
+        // Publish cursor line
+        if let Some(state) = egui::TextEdit::load_state(ui.ctx(), response.id) {
+            if let Some(cursor) = state.cursor.char_range() {
+                 let cursor_idx = cursor.primary.index;
+                 // Calculate line number (1-based)
+                 let line = self.content.chars().take(cursor_idx).filter(|&c| c == '\n').count() + 1;
+                 ctx.set_shared_state("markdown_editor_cursor_line", line);
+            }
+        }
     }
 
     /// Render the statistics bar
@@ -161,15 +188,9 @@ impl EditorCore {
         ui.horizontal(|ui| {
             ui.label(format!("Words: {}", self.stats.word_count()));
             ui.separator();
-            ui.label(format!("Characters: {}", self.stats.char_count()));
+            ui.label(format!("Chars: {}", self.stats.char_count()));
             ui.separator();
-            ui.label(format!("Paragraphs: {}", self.stats.paragraph_count()));
-            
-            if self.config.distraction_free {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label("🎯 Focus Mode");
-                });
-            }
+            ui.label(format!("Paras: {}", self.stats.paragraph_count()));
         });
     }
 
@@ -182,8 +203,8 @@ impl EditorCore {
     fn get_dynamic_title(&self, ctx: &egui::Context) -> String {
         if let Some(id) = self.text_edit_id {
             if let Some(state) = egui::TextEdit::load_state(ctx, id) {
-                if let Some(range) = state.ccursor_range() {
-                    let cursor_idx = range.primary.index;
+                if let Some(cursor) = state.cursor.char_range() {
+                    let cursor_idx = cursor.primary.index;
                     
                     // Convert char index to byte index to avoid panics with multi-byte chars
                     let byte_index = self.content.char_indices()
@@ -196,13 +217,16 @@ impl EditorCore {
                     for line in content_before.lines().rev() {
                         let trimmed = line.trim();
                         if trimmed.starts_with('#') {
-                            return trimmed.trim_start_matches('#').trim().to_string();
+                            let title = trimmed.trim_start_matches('#').trim().to_string();
+                            // tracing::debug!("Found title: {}", title);
+                            return title;
                         }
                     }
                 }
             }
         }
-        // Fallback to project name or default
+        
+        // Default title if no heading found
         "Untitled".to_string()
     }
 }
@@ -248,7 +272,7 @@ impl<'a> TabViewer for EditorViewer<'a> {
         self.core.render_editor(ui, self.ctx);
     }
 
-    fn context_menu(&mut self, ui: &mut Ui, _tab: &mut Self::Tab, surface: SurfaceIndex, node: NodeIndex) {
+    fn context_menu(&mut self, ui: &mut egui::Ui, _tab: &mut Self::Tab, surface: SurfaceIndex, node: NodeIndex) {
         if ui.button("Split Horizontal").clicked() {
             *self.pending_action = Some(DockAction::SplitHorizontal(surface, node));
             ui.close_menu();
@@ -263,11 +287,11 @@ impl<'a> TabViewer for EditorViewer<'a> {
         style.visuals.widgets.inactive.fg_stroke = egui::Stroke::NONE;
         style.visuals.widgets.active.fg_stroke = egui::Stroke::NONE;
         style.visuals.widgets.hovered.fg_stroke = egui::Stroke::NONE;
-        style.visuals.widgets.inactive.bg_fill = Color32::TRANSPARENT;
-        style.visuals.widgets.active.bg_fill = Color32::TRANSPARENT;
-        style.visuals.widgets.hovered.bg_fill = Color32::TRANSPARENT;
-        style.spacing.item_spacing = Vec2::ZERO;
-        style.spacing.button_padding = Vec2::ZERO;
+        style.visuals.widgets.inactive.bg_fill = egui::Color32::TRANSPARENT;
+        style.visuals.widgets.active.bg_fill = egui::Color32::TRANSPARENT;
+        style.visuals.widgets.hovered.bg_fill = egui::Color32::TRANSPARENT;
+        style.spacing.item_spacing = egui::Vec2::ZERO;
+        style.spacing.button_padding = egui::Vec2::ZERO;
     }
 }
 
@@ -397,12 +421,53 @@ impl Plugin for MarkdownEditorPlugin {
 
 impl PanelPlugin for MarkdownEditorPlugin {
     fn panel_title(&self) -> &str {
-        "Editor"
+        if self.core.current_title.is_empty() {
+            "Editor"
+        } else {
+            &self.core.current_title
+        }
+    }
+
+    fn update(&mut self, ctx: &mut PluginContext) -> Result<()> {
+        self.handle_auto_save(ctx);
+        
+        if let Some(action) = ctx.get_shared_state::<String>("markdown_editor_action") {
+            match action.as_str() {
+                "undo" => {
+                    if let Some(previous_content) = self.core.editor_state.undo(self.core.content.clone()) {
+                        self.core.content = previous_content;
+                        self.core.has_changes = true;
+                        self.core.update_stats();
+                    }
+                    ctx.set_shared_state("markdown_editor_action", "".to_string());
+                }
+                "redo" => {
+                    if let Some(next_content) = self.core.editor_state.redo(self.core.content.clone()) {
+                        self.core.content = next_content;
+                        self.core.has_changes = true;
+                        self.core.update_stats();
+                    }
+                    ctx.set_shared_state("markdown_editor_action", "".to_string());
+                }
+                _ => {}
+            }
+        }
+        
+        Ok(())
     }
 
     fn render_panel(&mut self, ui: &mut Ui, ctx: &mut PluginContext) {
         // Update dynamic title for the active tab
-        self.core.current_title = self.core.get_dynamic_title(ui.ctx());
+        // We do this here so it's available for the next frame's panel_title call
+        let new_title = self.core.get_dynamic_title(ui.ctx());
+        if new_title != self.core.current_title {
+            self.core.current_title = new_title;
+        }
+        
+        // Update shared state for other plugins (like Outline)
+        if self.core.has_changes {
+            ctx.set_shared_state("markdown_editor_content", self.core.content.clone());
+        }
         
         let mut pending_action = None;
         
