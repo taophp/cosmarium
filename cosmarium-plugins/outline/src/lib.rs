@@ -176,7 +176,10 @@ impl PanelPlugin for OutlinePlugin {
                         egui::RichText::new(text)
                     };
                     
-                    if ui.add(egui::Label::new(label).sense(egui::Sense::click())).clicked() {
+                    if ui.add(egui::Label::new(label).sense(egui::Sense::click()))
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .clicked() 
+                    {
                         // Navigate to line
                         ctx.set_shared_state("markdown_editor_goto_line", *line);
                         self.active_header_index = Some(i);

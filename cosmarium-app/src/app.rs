@@ -56,6 +56,10 @@ pub struct Cosmarium {
     new_project_name: String,
     new_project_path: String,
     new_project_template: String,
+    /// Whether to show the close confirmation dialog
+    show_close_confirmation: bool,
+    /// Whether to force close the application (ignoring unsaved changes)
+    force_close: bool,
 }
 
 /// Identifiers for the top-level menus
@@ -147,6 +151,8 @@ impl Cosmarium {
                 .to_string_lossy()
                 .to_string(),
             new_project_template: "novel".to_string(),
+            show_close_confirmation: false,
+            force_close: false,
         };
 
         // Initialize the application
@@ -268,6 +274,206 @@ impl Cosmarium {
         Ok(())
     }
 
+    /// Synchronize content from the editor plugin to the document manager
+    fn sync_editor_content(&mut self) {
+        let document_manager = self.core_app.document_manager();
+        
+        // Check if there's new content from the editor
+        if let Some(content) = self.plugin_context.get_shared_state::<String>("markdown_editor_content") {
+            if let Some(doc_id) = self.active_document_id {
+                // Use a blocking runtime to acquire the write lock deterministically
+                let rt = match tokio::runtime::Runtime::new() {
+                    Ok(r) => r,
+                    Err(e) => {
+                        tracing::error!("Failed to create Tokio runtime for sync: {}", e);
+                        return;
+                    }
+                };
+                rt.block_on(async {
+                    let mut manager = document_manager.write().await;
+                    if let Some(doc) = manager.get_document_mut(doc_id) {
+                        if doc.content() != content {
+                            doc.set_content(&content);
+                        }
+                    }
+                });
+            }
+        }
+    }
+
+    /// Check if there are any unsaved changes in the project
+    fn check_unsaved_changes(&self) -> bool {
+        // Use a blocking runtime to acquire read locks deterministically. If runtime
+        // creation fails, be conservative and report unsaved changes.
+        let rt = match tokio::runtime::Runtime::new() {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::error!("Failed to create Tokio runtime for check_unsaved_changes: {}", e);
+                return true; // Conservative: assume there are unsaved changes
+            }
+        };
+
+        let project_manager = self.core_app.project_manager();
+        if rt.block_on(async {
+            let manager = project_manager.read().await;
+            if let Some(project) = manager.active_project() {
+                return project.has_unsaved_changes();
+            }
+            false
+        }) {
+            return true;
+        }
+
+        let document_manager = self.core_app.document_manager();
+        let any_unsaved = rt.block_on(async {
+            let manager = document_manager.read().await;
+            for doc_id in manager.list_documents() {
+                if let Some(doc) = manager.get_document(doc_id) {
+                    if doc.has_unsaved_changes() {
+                        return true;
+                    }
+                }
+            }
+            false
+        });
+
+        any_unsaved
+    }
+
+    /// Save the current project.
+    fn save_current_project(&mut self) -> Result<()> {
+        // Sync editor content first
+        self.sync_editor_content();
+        
+        // Capture editor content (if any) before entering async block
+        let editor_content = self.plugin_context.get_shared_state::<String>("markdown_editor_content");
+
+        let project_manager = self.core_app.project_manager();
+        let document_manager = self.core_app.document_manager();
+
+        let rt = tokio::runtime::Runtime::new()
+            .map_err(|e| anyhow::anyhow!("Failed to create Tokio runtime: {}", e))?;
+
+        // Save active document (if any) first, then save project metadata
+        rt.block_on(async {
+            // Determine project path if available
+            let project_path_opt = {
+                let pm_read = project_manager.read().await;
+                pm_read.active_project().map(|p| p.path().to_path_buf()).or_else(|| self.current_project.clone())
+            };
+
+            tracing::debug!("save_current_project: project_path={:?}, active_document_id={:?}, editor_content_present={}",
+                project_path_opt,
+                self.active_document_id,
+                editor_content.is_some());
+
+            if let Some(doc_id) = self.active_document_id {
+                // Acquire document manager write lock to modify document and set file path if missing
+                let mut dm = document_manager.write().await;
+                if let Some(doc) = dm.get_document_mut(doc_id) {
+                    tracing::debug!("Found active document {} title='{}' file_path={:?}", doc_id, doc.title(), doc.file_path());
+
+                    if doc.file_path().is_none() {
+                        if let Some(proj_path) = &project_path_opt {
+                            // Ensure content dir exists
+                            let content_dir = proj_path.join("content");
+                            if let Err(e) = tokio::fs::create_dir_all(&content_dir).await {
+                                tracing::error!("Failed to create content dir: {}", e);
+                            } else {
+                                // Create filename from title or uuid fallback
+                                let safe_name = if !doc.title().is_empty() { doc.title().to_lowercase().replace(" ", "_") } else { format!("doc_{}", uuid::Uuid::new_v4()) };
+                                let filename = format!("{}.{}", safe_name, doc.format().extension());
+                                let file_path = content_dir.join(filename);
+                                tracing::debug!("Setting file path for doc {} -> {:?}", doc_id, file_path);
+                                doc.set_file_path(&file_path);
+                            }
+                        } else {
+                            tracing::warn!("No active project path; cannot set file path for document {}", doc_id);
+                        }
+                    }
+
+                    let file_path_opt = doc.file_path().map(|p| p.to_path_buf());
+
+                    if let Err(e) = dm.save_document(doc_id).await {
+                        tracing::error!("Failed to save active document {}: {}", doc_id, e);
+                    } else {
+                        tracing::info!("Saved active document {} to {:?}", doc_id, file_path_opt);
+                        // Check file metadata
+                        if let Some(ref path) = file_path_opt {
+                            match tokio::fs::metadata(path).await {
+                                Ok(meta) => tracing::debug!("Saved file metadata: exists={}, size={}", true, meta.len()),
+                                Err(e) => tracing::warn!("Saved file metadata not found for {:?}: {}", path, e),
+                            }
+                        }
+
+                        // Ensure project references this document id before saving project
+                        let mut pm = project_manager.write().await;
+                        if let Some(project) = pm.active_project_mut() {
+                            project.add_document(doc_id);
+                        }
+                        // pm.save_project() will be called after this async block
+                    }
+                } else {
+                    tracing::warn!("Active document id {} not found in DocumentManager", doc_id);
+                }
+            } else if let Some(content) = editor_content {
+                tracing::debug!("No active document; creating new document from editor content (len={})", content.len());
+                // No active document: create one from editor content and save it
+                let mut dm = document_manager.write().await;
+                // Choose a title based on project or fallback
+                let title = if let Some(proj_path) = &project_path_opt {
+                    proj_path.file_name().and_then(|n| n.to_str()).unwrap_or("untitled").to_string()
+                } else {
+                    "untitled".to_string()
+                };
+
+                // Create document (Markdown assumed)
+                match dm.create_document(&title, &content, cosmarium_core::document::DocumentFormat::Markdown).await {
+                    Ok(new_id) => {
+                        tracing::debug!("Created new document {} with title='{}'", new_id, title);
+                        // Set file path if project exists
+                        if let Some(proj_path) = &project_path_opt {
+                            let content_dir = proj_path.join("content");
+                            if let Err(e) = tokio::fs::create_dir_all(&content_dir).await {
+                                tracing::error!("Failed to create content dir: {}", e);
+                            } else {
+                                let filename = format!("{}.{}", format!("doc_{}", new_id), cosmarium_core::document::DocumentFormat::Markdown.extension());
+                                let file_path = content_dir.join(filename);
+                                tracing::debug!("Setting file path for new doc {} -> {:?}", new_id, file_path);
+                                if let Some(doc_mut) = dm.get_document_mut(new_id) {
+                                    doc_mut.set_file_path(&file_path);
+                                }
+                            }
+                        } else {
+                            tracing::warn!("No active project path; new document {} will have no file path", new_id);
+                        }
+
+                        if let Err(e) = dm.save_document(new_id).await {
+                            tracing::error!("Failed to save new document {}: {}", new_id, e);
+                        } else {
+                            tracing::info!("Saved new document {}", new_id);
+                            // Update active document id so UI reflects saved doc
+                            self.active_document_id = Some(new_id);
+
+                            // Ensure project references this document id before saving project
+                            let mut pm = project_manager.write().await;
+                            if let Some(project) = pm.active_project_mut() {
+                                project.add_document(new_id);
+                            }
+                        }
+                    }
+                    Err(e) => tracing::error!("Failed to create document from editor content: {}", e),
+                }
+            } else {
+                tracing::debug!("No active document and no editor content to save");
+            }
+
+            // Finally, save project metadata
+            let mut pm = project_manager.write().await;
+            pm.save_project().await
+        })
+    }
+
     /// Open a project asynchronously (called from file dialog).
     fn open_project_async(&mut self, path: std::path::PathBuf) -> Result<()> {
         tracing::info!("Opening project from {:?}", path);
@@ -293,23 +499,57 @@ impl Cosmarium {
             .map_err(|e| anyhow::anyhow!("Failed to create Tokio runtime: {}", e))?;
         let pm_clone = Arc::clone(&project_manager);
         let (doc_id_opt, doc_content) = rt2.block_on(async move {
-            let pm = pm_clone.read().await;
-            let dm = document_manager.read().await;
-            
-            if let Some(project) = pm.active_project() {
-                if let Some(&doc_id) = project.documents().first() {
-                    if let Some(doc) = dm.get_document(doc_id) {
-                        return (Some(doc_id), Some(doc.content().to_string()));
+            // Try to find a content file in the project's content directory and open it.
+            let pm_read = pm_clone.read().await;
+            if let Some(project) = pm_read.active_project() {
+                let content_dir = project.path().join("content");
+                drop(pm_read); // release read lock before async file ops / write locks
+
+                // Look for a file in content_dir with a supported extension
+                let mut found: Option<std::path::PathBuf> = None;
+                if let Ok(mut rd) = tokio::fs::read_dir(&content_dir).await {
+                    while let Ok(Some(entry)) = rd.next_entry().await {
+                        if let Ok(ft) = entry.file_type().await {
+                            if ft.is_file() {
+                                let path = entry.path();
+                                if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
+                                    match ext {
+                                        "md" | "markdown" | "txt" | "rtf" | "html" | "htm" => {
+                                            found = Some(path);
+                                            break;
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if let Some(path) = found {
+                    // Open document in DocumentManager so it becomes available in-memory
+                    let mut dm_write = document_manager.write().await;
+                    match dm_write.open_document(&path).await {
+                        Ok(new_id) => {
+                            if let Some(doc) = dm_write.get_document(new_id) {
+                                return (Some(new_id), Some(doc.content().to_string()));
+                            }
+                        }
+                        Err(e) => tracing::error!("Failed to open document from path {:?}: {}", path, e),
                     }
                 }
             }
+
             (None, None)
         });
         
         // Set active document and content in editor if we got any
         self.active_document_id = doc_id_opt;
         if let Some(content) = doc_content {
-            self.plugin_context.set_shared_state("markdown_editor_content", content);
+            self.plugin_context.set_shared_state("markdown_editor_content", content.clone());
+            // Also write plugin-specific data as a fallback synchronization channel
+            self.plugin_context.set_plugin_data("markdown-editor", "loaded_content", content.clone());
+
         }
         
         // Update recent projects list
@@ -334,76 +574,8 @@ impl Cosmarium {
         // Update UI list
         self.recent_projects = self.session.recent_projects.clone();
         
-        Ok(())
-    }
-
-    /// Save the current project.
-    fn save_current_project(&mut self) -> Result<()> {
-        if self.current_project.is_none() {
-            tracing::warn!("No active project to save");
-            return Ok(());
-        }
-        
-        tracing::info!("Saving current project");
-        
-        // Get editor content from MarkdownEditorPlugin
-        let editor_content = if let Some(editor) = self.panel_plugins.get("Markdown Editor") {
-            // Try to downcast to MarkdownEditorPlugin
-            // Since we can't easily downcast trait objects, use shared state
-            self.plugin_context.get_shared_state::<String>("markdown_editor_content")
-        } else {
-            None
-        };
-        
-        let project_manager = Arc::clone(&self.core_app.project_manager());
-        let document_manager = Arc::clone(&self.core_app.document_manager());
-        let document_id = self.active_document_id;
-        
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| anyhow::anyhow!("Failed to create Tokio runtime: {}", e))?;
-        
-        // Save editor content to document if we have content
-        if let Some(content) = editor_content {
-            let saved_doc_id = rt.block_on(async move {
-                let mut dm = document_manager.write().await;
-                let mut pm = project_manager.write().await;
-                
-                // Create or update document
-                let doc_id = if let Some(id) = document_id {
-                    // Update existing document
-                    if let Some(doc) = dm.get_document_mut(id) {
-                        doc.set_content(&content);
-                        dm.save_document(id).await?;
-                    }
-                    id
-                } else {
-                    // Create new document
-                    use cosmarium_core::document::DocumentFormat;
-                    let doc_id = dm.create_document("Untitled", &content, DocumentFormat::Markdown).await?;
-                    
-                    // Add document to project
-                    if let Some(project) = pm.active_project_mut() {
-                        project.add_document(doc_id);
-                    }
-                    
-                    doc_id
-                };
-                
-                // Save project
-                pm.save_project().await?;
-                
-                Ok::<Uuid, anyhow::Error>(doc_id)
-            })?;
-            
-            // Update active document ID
-            self.active_document_id = Some(saved_doc_id);
-        } else {
-            // No editor content, just save project
-            rt.block_on(async move {
-                let mut pm = project_manager.write().await;
-                pm.save_project().await
-            })?;
-        }
+        // Request focus for the editor
+        self.plugin_context.set_shared_state("markdown_editor_focus_requested", true);
         
         Ok(())
     }
@@ -447,6 +619,9 @@ impl Cosmarium {
             tracing::warn!("Failed to save session: {}", e);
         }
         self.recent_projects = self.session.recent_projects.clone();
+        
+        // Request focus for the editor
+        self.plugin_context.set_shared_state("markdown_editor_focus_requested", true);
         
         Ok(())
     }
@@ -1121,6 +1296,13 @@ impl Cosmarium {
 
 impl eframe::App for Cosmarium {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        // Handle close request
+        if ctx.input(|i| i.viewport().close_requested()) {
+            if !self.handle_close_request() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            }
+        }
+
         // Update plugins
         for plugin in self.plugins.values_mut() {
             if let Err(e) = plugin.update(&mut self.plugin_context) {
@@ -1190,6 +1372,7 @@ impl eframe::App for Cosmarium {
         self.render_status_bar(ctx);
         self.render_panels(ctx);
         self.render_dialogs(ctx);
+        self.render_close_confirmation(ctx);
     }
 
     fn save(&mut self, _storage: &mut dyn eframe::Storage) {
@@ -1216,6 +1399,65 @@ impl eframe::App for Cosmarium {
             {
                 tracing::error!("Plugin shutdown error: {}", e);
             }
+        }
+    }
+}
+
+impl Cosmarium {
+    fn handle_close_request(&mut self) -> bool {
+        // If force close is set, allow closing immediately
+        if self.force_close {
+            return true;
+        }
+
+        // Sync content first to ensure we have latest state
+        self.sync_editor_content();
+        
+        // Check for unsaved changes
+        if self.check_unsaved_changes() {
+            self.show_close_confirmation = true;
+            // Prevent closing, show dialog instead
+            return false;
+        }
+        
+        // No unsaved changes, allow closing
+        true
+    }
+
+    fn render_close_confirmation(&mut self, ctx: &egui::Context) {
+        if self.show_close_confirmation {
+            egui::Window::new("Unsaved Changes")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .show(ctx, |ui| {
+                    ui.set_width(300.0);
+                    ui.heading("Unsaved Changes");
+                    ui.label("You have unsaved changes. Do you want to save them before closing?");
+
+                    ui.separator();
+
+                    ui.horizontal(|ui| {
+                        if ui.button("Save").clicked() {
+                            if let Err(e) = self.save_current_project() {
+                                tracing::error!("Failed to save project on close: {}", e);
+                            }
+                            self.show_close_confirmation = false;
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        }
+
+                        if ui.button("Don't Save").clicked() {
+                            // Discard changes and close
+                            self.show_close_confirmation = false;
+                            self.force_close = true;
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        }
+
+                        if ui.button("Cancel").clicked() {
+                            self.show_close_confirmation = false;
+                        }
+                    });
+                });
         }
     }
 }

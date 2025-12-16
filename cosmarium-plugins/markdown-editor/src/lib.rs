@@ -34,6 +34,7 @@ use cosmarium_plugin_api::{
     Event, EventType, Result
 };
 use egui::{Ui, Color32, Vec2};
+use egui::text_edit::TextEditState;
 use serde::{Deserialize, Serialize};
 use egui_dock::{DockArea, Style, TabViewer, DockState, NodeIndex, SurfaceIndex, Split, Node};
 
@@ -82,8 +83,9 @@ struct EditorCore {
     text_edit_id: Option<egui::Id>,
     editor_state: editor::MarkdownEditor,
     current_title: String,
+    last_cursor_char_idx: Option<usize>,
     last_save: std::time::Instant,
-}
+ }
 
 impl EditorCore {
     fn new() -> Self {
@@ -94,13 +96,14 @@ impl EditorCore {
             has_changes: false,
             text_edit_id: None,
             editor_state: editor::MarkdownEditor::new(),
-            current_title: "Untitled".to_string(),
+            current_title: "Editor".to_string(),
+            last_cursor_char_idx: None,
             last_save: std::time::Instant::now(),
         }
     }
 
     /// Render the main editor UI
-    fn render_editor(&mut self, ui: &mut Ui, ctx: &mut PluginContext) {
+    fn render_editor(&mut self, ui: &mut Ui, ctx: &mut PluginContext, tab_id: &str) {
 
         
         // Capture old content before editing
@@ -111,51 +114,146 @@ impl EditorCore {
         
         let mut scroll_area = egui::ScrollArea::vertical();
         
+        // Initialize focus request flag
+        let mut request_focus = self.text_edit_id.is_none();
+        
         // Handle goto line request by setting scroll offset
         if let Some(target_line) = ctx.get_shared_state::<usize>("markdown_editor_goto_line") {
             if target_line > 0 {
-                let scroll_offset = (target_line as f32 - 1.0) * row_height;
-                scroll_area = scroll_area.vertical_scroll_offset(scroll_offset);
+                // Check if we are the target tab (last active tab)
+                let last_active = ctx.get_shared_state::<String>("markdown_editor_last_active_tab");
+                // If no last active tab is recorded, the first one to run will take it (fallback)
+                let is_target = last_active.as_deref() == Some(tab_id) || last_active.is_none();
                 
-                // Also move cursor to that line
-                let char_idx = self.content.lines()
-                    .take(target_line - 1)
-                    .map(|l| l.chars().count() + 1)
-                    .sum::<usize>();
+                if is_target {
+                    let scroll_offset = (target_line as f32 - 1.0) * row_height;
+                    scroll_area = scroll_area.vertical_scroll_offset(scroll_offset);
                     
-                if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), self.text_edit_id.unwrap_or(egui::Id::new("editor"))) {
-                    let ccursor = egui::text::CCursor::new(char_idx);
-                    state.cursor.set_char_range(Some(egui::text::CCursorRange::one(ccursor)));
-                    egui::TextEdit::store_state(ui.ctx(), self.text_edit_id.unwrap_or(egui::Id::new("editor")), state);
+                    // Move cursor to the END of that line
+                    let lines: Vec<&str> = self.content.lines().collect();
+                    if target_line <= lines.len() {
+                        let pre_chars: usize = lines.iter().take(target_line - 1).map(|l| l.chars().count() + 1).sum();
+                        let line_len = lines[target_line - 1].chars().count();
+                        let char_idx = pre_chars + line_len;
+                        
+                        let edit_id = egui::Id::new("markdown_editor_textedit").with(tab_id);
+                        if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), edit_id) {
+                            let ccursor = egui::text::CCursor::new(char_idx);
+                            state.cursor.set_char_range(Some(egui::text::CCursorRange::one(ccursor)));
+                            egui::TextEdit::store_state(ui.ctx(), edit_id, state);
+                        }
+                    }
+                    
+                    // Request focus back to editor
+                    request_focus = true;
+                    
+                    // Clear request
+                    ctx.set_shared_state("markdown_editor_goto_line", 0usize);
                 }
-                
-                // Clear request
-                ctx.set_shared_state("markdown_editor_goto_line", 0usize);
+            }
+        }
+
+        // Attempt to restore a previously saved TextEdit state (caret/selection) once on first render
+        if self.text_edit_id.is_none() {
+            if let Some(saved_state) = ctx.get_plugin_data::<TextEditState>("markdown-editor", "textedit_state") {
+                egui::TextEdit::store_state(ui.ctx(), egui::Id::new("markdown_editor_textedit").with(tab_id), saved_state.clone());
+                tracing::debug!("markdown-editor.render_editor: restored saved TextEditState (once)");
+            }
+        }
+
+        // Check for focus request (external or internal from goto_line)
+        if let Some(focus_requested) = ctx.get_shared_state::<bool>("markdown_editor_focus_requested") {
+            if focus_requested {
+                request_focus = true;
+                // Clear the request
+                ctx.set_shared_state("markdown_editor_focus_requested", false);
             }
         }
 
         let output = scroll_area.show(ui, |ui| {
-            ui.add_sized(
-                ui.available_size(),
-                egui::TextEdit::multiline(&mut self.content)
-                    .font(egui::TextStyle::Monospace)
-                    .desired_width(f32::INFINITY)
-                    .lock_focus(true)
-            )
+                ui.add_sized(
+                    ui.available_size(),
+                    egui::TextEdit::multiline(&mut self.content)
+                        .id(egui::Id::new("markdown_editor_textedit").with(tab_id))
+                        .font(egui::TextStyle::Monospace)
+                        .desired_width(f32::INFINITY)
+                        .lock_focus(request_focus)
+                )
         });
         
         let response = output.inner;
-        
-        // Request focus on first render or when clicked
-        if response.clicked() || self.text_edit_id.is_none() {
-            response.request_focus();
+
+        // Track last active tab for multi-tab coordination
+        if response.has_focus() {
+            ctx.set_shared_state("markdown_editor_last_active_tab", tab_id.to_string());
         }
-        
+
+        // If we requested focus, explicitly request it from memory as well to be sure
+        if request_focus {
+            ui.ctx().memory_mut(|m| m.request_focus(response.id));
+        }
+
+        // Clicking the widget should focus it via egui normally; log clicks for diagnostics
+        if response.clicked() {
+            tracing::debug!("markdown-editor.render_editor: editor clicked, should receive focus normally");
+        }
+
+        // Log input events when editor has focus, and detect text events without focus
+        let editor_has_focus = response.has_focus();
+        ui.ctx().input(|input| {
+            if editor_has_focus {
+                for ev in input.events.iter() {
+                    match ev {
+                        egui::Event::Key { key, pressed, .. } => {
+                            tracing::debug!("markdown-editor.render_editor: key event: {:?}, pressed={}", key, pressed);
+                        }
+                        egui::Event::Text(text) => {
+                            tracing::debug!("markdown-editor.render_editor: text event: {:?}", text);
+                        }
+                        egui::Event::Paste(text) => {
+                            tracing::debug!("markdown-editor.render_editor: paste event: {:?}", text);
+                        }
+                        _ => {}
+                    }
+                }
+            } else {
+                let text_count = input.events.iter().filter(|ev| matches!(ev, egui::Event::Text(_))).count();
+                if text_count > 0 {
+                    tracing::debug!("markdown-editor.render_editor: {} text events received while editor not focused", text_count);
+                }
+            }
+        });
+
+        // Log when TextEdit id changes (useful to detect rebuilds)
+        if self.text_edit_id.map(|id| id != response.id).unwrap_or(true) {
+            tracing::debug!("markdown-editor.render_editor: TextEdit id changed: old={:?} new={:?}", self.text_edit_id, response.id);
+        }
+
         // Store the ID for later state retrieval
         self.text_edit_id = Some(response.id);
 
+        // Save TextEdit state (caret/selection) into plugin_data only when content or cursor changed
+        if response.changed() {
+            if let Some(state) = egui::TextEdit::load_state(ui.ctx(), response.id) {
+                ctx.set_plugin_data("markdown-editor", "textedit_state", state.clone());
+                tracing::debug!("markdown-editor.render_editor: saved TextEditState on change (len={})", self.content.len());
+            }
+        }
+
+        // Also save when cursor moved (so caret position is preserved)
+        if let Some(state) = egui::TextEdit::load_state(ui.ctx(), response.id) {
+            if let Some(cursor) = state.cursor.char_range() {
+                let cursor_idx = cursor.primary.index;
+                if self.last_cursor_char_idx.map(|prev| prev != cursor_idx).unwrap_or(true) {
+                    ctx.set_plugin_data("markdown-editor", "textedit_state", state.clone());
+                    tracing::debug!("markdown-editor.render_editor: saved TextEditState on cursor move to {}", cursor_idx);
+                }
+            }
+        }
+
         // Handle content changes
         if response.changed() {
+            tracing::debug!("markdown-editor.render_editor: TextEdit changed (content_len={}), has_focus={}", self.content.len(), response.has_focus());
             self.has_changes = true;
             self.update_stats();
             
@@ -172,13 +270,25 @@ impl EditorCore {
         ctx.set_shared_state("editor_char_count", self.stats.char_count());
         ctx.set_shared_state("editor_para_count", self.stats.paragraph_count());
 
-        // Publish cursor line
+        // Publish cursor line and detect cursor movement
         if let Some(state) = egui::TextEdit::load_state(ui.ctx(), response.id) {
             if let Some(cursor) = state.cursor.char_range() {
                  let cursor_idx = cursor.primary.index;
                  // Calculate line number (1-based)
                  let line = self.content.chars().take(cursor_idx).filter(|&c| c == '\n').count() + 1;
                  ctx.set_shared_state("markdown_editor_cursor_line", line);
+
+                 // If the cursor moved, update last cursor index (title updates removed)
+                 let cursor_changed = match self.last_cursor_char_idx {
+                     Some(prev) => prev != cursor_idx,
+                     None => true,
+                 };
+ 
+                 if cursor_changed {
+                     tracing::debug!("markdown-editor.render_editor: cursor moved from {:?} to {}", self.last_cursor_char_idx, cursor_idx);
+                     self.last_cursor_char_idx = Some(cursor_idx);
+                 }
+
             }
         }
     }
@@ -226,8 +336,8 @@ impl EditorCore {
             }
         }
         
-        // Default title if no heading found
-        "Untitled".to_string()
+        // No heading found: return empty so UI can use default tab name
+        String::new()
     }
 }
 
@@ -262,14 +372,18 @@ impl<'a> TabViewer for EditorViewer<'a> {
     fn title(&mut self, tab: &mut Self::Tab) -> egui::WidgetText {
         // Use dynamic title if available, otherwise tab name
         if tab == "Main View" {
-            self.core.current_title.clone().into()
+            if self.core.current_title.is_empty() {
+                tab.as_str().into()
+            } else {
+                self.core.current_title.clone().into()
+            }
         } else {
             tab.as_str().into()
         }
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, _tab: &mut Self::Tab) {
-        self.core.render_editor(ui, self.ctx);
+    fn ui(&mut self, ui: &mut egui::Ui, tab: &mut Self::Tab) {
+        self.core.render_editor(ui, self.ctx, tab);
     }
 
     fn context_menu(&mut self, ui: &mut egui::Ui, _tab: &mut Self::Tab, surface: SurfaceIndex, node: NodeIndex) {
@@ -378,7 +492,9 @@ impl Plugin for MarkdownEditorPlugin {
         }
 
         if let Some(content) = ctx.get_shared_state::<String>("markdown_editor_content") {
+            tracing::debug!("markdown-editor.initialize: received shared_state content (len={})", content.len());
             self.core.content = content;
+            self.core.has_changes = false;
             self.core.update_stats();
         }
 
@@ -393,6 +509,34 @@ impl Plugin for MarkdownEditorPlugin {
     fn update(&mut self, ctx: &mut PluginContext) -> Result<()> {
         self.handle_auto_save(ctx);
         
+        // Sync inbound shared state content into editor if provided
+        if let Some(in_content) = ctx.get_shared_state::<String>("markdown_editor_content") {
+            tracing::debug!("markdown-editor.update: found shared_state content (len={}), current_len={}", in_content.len(), self.core.content.len());
+            if in_content != self.core.content {
+                if self.core.has_changes {
+                    tracing::debug!("markdown-editor.update: received external content but local changes exist; skipping apply");
+                } else {
+                    tracing::info!("markdown-editor.update: applying shared_state content to editor core");
+                    self.core.content = in_content;
+                    // Content loaded from disk should be treated as saved
+                    self.core.has_changes = false;
+                    self.core.update_stats();
+                }
+            }
+        }
+
+        // Also check plugin-specific data for loaded content (fallback channel)
+        if let Some(loaded) = ctx.get_plugin_data::<String>("markdown-editor", "loaded_content") {
+            tracing::debug!("markdown-editor.update: found plugin_data loaded_content (len={})", loaded.len());
+            if loaded != self.core.content && !loaded.is_empty() {
+                tracing::info!("markdown-editor.update: applying plugin_data loaded_content to editor core");
+                self.core.content = loaded;
+                self.core.has_changes = false;
+                self.core.update_stats();
+                ctx.set_plugin_data("markdown-editor", "loaded_content", String::new());
+            }
+        }
+
         if let Some(action) = ctx.get_shared_state::<String>("markdown_editor_action") {
             match action.as_str() {
                 "undo" => {
@@ -431,6 +575,22 @@ impl PanelPlugin for MarkdownEditorPlugin {
     fn update(&mut self, ctx: &mut PluginContext) -> Result<()> {
         self.handle_auto_save(ctx);
         
+        // Sync inbound shared state content into editor if provided
+        if let Some(in_content) = ctx.get_shared_state::<String>("markdown_editor_content") {
+            tracing::debug!("markdown-editor.panel_update: found shared_state content (len={}), current_len={}", in_content.len(), self.core.content.len());
+            if in_content != self.core.content {
+                if self.core.has_changes {
+                    tracing::debug!("markdown-editor.panel_update: received external content but local changes exist; skipping apply");
+                } else {
+                    tracing::info!("markdown-editor.panel_update: applying shared_state content to editor core");
+                    self.core.content = in_content;
+                    // Content loaded from disk should be treated as saved
+                    self.core.has_changes = false;
+                    self.core.update_stats();
+                }
+            }
+        }
+
         if let Some(action) = ctx.get_shared_state::<String>("markdown_editor_action") {
             match action.as_str() {
                 "undo" => {
@@ -457,16 +617,14 @@ impl PanelPlugin for MarkdownEditorPlugin {
     }
 
     fn render_panel(&mut self, ui: &mut Ui, ctx: &mut PluginContext) {
-        // Update dynamic title for the active tab
-        // We do this here so it's available for the next frame's panel_title call
-        let new_title = self.core.get_dynamic_title(ui.ctx());
-        if new_title != self.core.current_title {
-            self.core.current_title = new_title;
-        }
-        
+        // Static title 'Editor' — dynamic title logic removed to avoid flicker/focus issues.
         // Update shared state for other plugins (like Outline)
         if self.core.has_changes {
+            tracing::debug!("markdown-editor.render_panel: publishing shared_state content (len={})", self.core.content.len());
             ctx.set_shared_state("markdown_editor_content", self.core.content.clone());
+        } else {
+            // Also publish current content length for diagnostic purposes
+            tracing::debug!("markdown-editor.render_panel: no changes (has_changes={}), content_len={}", self.core.has_changes, self.core.content.len());
         }
         
         let mut pending_action = None;
@@ -615,5 +773,19 @@ mod tests {
         // Verify content was saved to shared state
         let saved_content: Option<String> = ctx.get_shared_state("markdown_editor_content");
         assert_eq!(saved_content, Some("Test content".to_string()));
+    }
+
+    #[test]
+    fn test_update_syncs_shared_state() {
+        let mut editor = MarkdownEditorPlugin::new();
+        let mut ctx = PluginContext::new();
+
+        // Shared state has content before update
+        ctx.set_shared_state("markdown_editor_content", "Loaded content".to_string());
+
+        // Call update which should sync shared state into the editor core
+        assert!(cosmarium_plugin_api::Plugin::update(&mut editor, &mut ctx).is_ok());
+        assert_eq!(editor.content(), "Loaded content");
+        assert!(!editor.has_changes(), "Content loaded from shared state should be treated as saved");
     }
 }
