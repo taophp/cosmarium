@@ -39,7 +39,7 @@ impl PluginInfo {
     ///
     /// let info = PluginInfo::new(
     ///     "my-plugin",
-    ///     "1.0.0", 
+    ///     "1.0.0",
     ///     "A sample plugin",
     ///     "Plugin Author"
     /// );

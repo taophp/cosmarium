@@ -8,7 +8,6 @@
 //! define their own error types while still integrating with the core
 //! error handling infrastructure.
 
-
 use thiserror::Error;
 
 /// Result type used throughout Cosmarium Core.

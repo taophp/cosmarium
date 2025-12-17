@@ -1,8 +1,8 @@
 use cosmarium_plugin_api::{
-    PanelPlugin, Plugin, PluginContext, PluginInfo, PluginType, PanelPosition, Result
+    PanelPlugin, PanelPosition, Plugin, PluginContext, PluginInfo, PluginType, Result,
 };
 use egui::Ui;
-use pulldown_cmark::{Parser, Event, Tag, Options};
+use pulldown_cmark::{Event, Options, Parser, Tag};
 use std::collections::HashSet;
 
 pub struct OutlinePlugin {
@@ -34,7 +34,7 @@ impl OutlinePlugin {
 
     fn parse_headers(&mut self, content: &str) {
         self.headers.clear();
-        
+
         // We need line numbers. pulldown-cmark provides byte offsets.
         // We can build a line index map.
         let line_starts: Vec<usize> = std::iter::once(0)
@@ -42,7 +42,7 @@ impl OutlinePlugin {
             .collect();
 
         let parser = Parser::new_ext(content, Options::empty()).into_offset_iter();
-        
+
         let mut current_header_level = None;
         let mut current_header_text = String::new();
         let mut current_header_start = 0;
@@ -66,15 +66,16 @@ impl OutlinePlugin {
                             Ok(idx) => idx,
                             Err(idx) => idx.saturating_sub(1),
                         };
-                        
-                        self.headers.push((level, current_header_text.clone(), line_number + 1));
+
+                        self.headers
+                            .push((level, current_header_text.clone(), line_number + 1));
                     }
                     current_header_level = None;
                 }
                 _ => {}
             }
         }
-        
+
         // Update hash
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
@@ -90,7 +91,7 @@ impl Plugin for OutlinePlugin {
             "outline",
             "0.1.0",
             "Document outline view",
-            "Cosmarium Team"
+            "Cosmarium Team",
         )
         .with_dependency("markdown-editor")
     }
@@ -129,7 +130,7 @@ impl PanelPlugin for OutlinePlugin {
             use std::hash::{Hash, Hasher};
             content.hash(&mut hasher);
             let new_hash = hasher.finish();
-            
+
             if new_hash != self.last_content_hash {
                 tracing::info!("Outline parsing new content");
                 self.parse_headers(&content);
@@ -165,20 +166,23 @@ impl PanelPlugin for OutlinePlugin {
             // Simple indentation-based rendering for now (placeholder for egui_ltreeview)
             for (i, (level, text, line)) in self.headers.iter().enumerate() {
                 let indent = (*level as f32 - 1.0) * 10.0;
-                
+
                 let is_active = self.active_header_index == Some(i);
-                
+
                 ui.horizontal(|ui| {
                     ui.add_space(indent);
                     let label = if is_active {
-                        egui::RichText::new(text).strong().color(ui.visuals().text_color())
+                        egui::RichText::new(text)
+                            .strong()
+                            .color(ui.visuals().text_color())
                     } else {
                         egui::RichText::new(text)
                     };
-                    
-                    if ui.add(egui::Label::new(label).sense(egui::Sense::click()))
+
+                    if ui
+                        .add(egui::Label::new(label).sense(egui::Sense::click()))
                         .on_hover_cursor(egui::CursorIcon::PointingHand)
-                        .clicked() 
+                        .clicked()
                     {
                         // Navigate to line
                         ctx.set_shared_state("markdown_editor_goto_line", *line);

@@ -321,7 +321,10 @@ impl Default for PluginConfig {
             disabled_plugins: Vec::new(),
             plugin_directories: vec![
                 PathBuf::from("plugins"),
-                dirs::data_dir().unwrap_or_default().join("cosmarium").join("plugins"),
+                dirs::data_dir()
+                    .unwrap_or_default()
+                    .join("cosmarium")
+                    .join("plugins"),
             ],
             auto_load: true,
             check_signatures: false,
@@ -480,10 +483,10 @@ impl Config {
     pub fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
         let content = std::fs::read_to_string(path)
             .map_err(|e| Error::config(format!("Failed to read config file: {}", e)))?;
-        
+
         let config: Config = toml::from_str(&content)
             .map_err(|e| Error::config(format!("Failed to parse config file: {}", e)))?;
-        
+
         config.validate()?;
         Ok(config)
     }
@@ -530,19 +533,19 @@ impl Config {
     /// ```
     pub fn save_to_file<P: AsRef<Path>>(&self, path: P) -> Result<()> {
         self.validate()?;
-        
+
         let content = toml::to_string_pretty(self)
             .map_err(|e| Error::config(format!("Failed to serialize config: {}", e)))?;
-        
+
         // Ensure directory exists
         if let Some(parent) = path.as_ref().parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| Error::config(format!("Failed to create config directory: {}", e)))?;
         }
-        
+
         std::fs::write(path, content)
             .map_err(|e| Error::config(format!("Failed to write config file: {}", e)))?;
-        
+
         Ok(())
     }
 
@@ -568,14 +571,14 @@ impl Config {
         if self.ui.font_size <= 0.0 || self.ui.font_size > 72.0 {
             return Err(Error::validation(
                 "ui.font_size",
-                "Font size must be between 1 and 72"
+                "Font size must be between 1 and 72",
             ));
         }
-        
+
         if self.ui.window_width < 400.0 || self.ui.window_height < 300.0 {
             return Err(Error::validation(
                 "ui.window_size",
-                "Window size must be at least 400x300"
+                "Window size must be at least 400x300",
             ));
         }
 
@@ -583,21 +586,21 @@ impl Config {
         if self.editor.font_size <= 0.0 || self.editor.font_size > 72.0 {
             return Err(Error::validation(
                 "editor.font_size",
-                "Editor font size must be between 1 and 72"
+                "Editor font size must be between 1 and 72",
             ));
         }
-        
+
         if self.editor.tab_size == 0 || self.editor.tab_size > 16 {
             return Err(Error::validation(
                 "editor.tab_size",
-                "Tab size must be between 1 and 16"
+                "Tab size must be between 1 and 16",
             ));
         }
 
         if self.editor.line_height < 0.8 || self.editor.line_height > 3.0 {
             return Err(Error::validation(
                 "editor.line_height",
-                "Line height must be between 0.8 and 3.0"
+                "Line height must be between 0.8 and 3.0",
             ));
         }
 
@@ -605,7 +608,7 @@ impl Config {
         if self.app.max_recent_projects > 50 {
             return Err(Error::validation(
                 "app.max_recent_projects",
-                "Maximum recent projects cannot exceed 50"
+                "Maximum recent projects cannot exceed 50",
             ));
         }
 
@@ -613,15 +616,16 @@ impl Config {
         if self.project.backup_count > 20 {
             return Err(Error::validation(
                 "project.backup_count",
-                "Backup count cannot exceed 20"
+                "Backup count cannot exceed 20",
             ));
         }
 
         // Validate advanced settings
-        if !["error", "warn", "info", "debug", "trace"].contains(&self.advanced.log_level.as_str()) {
+        if !["error", "warn", "info", "debug", "trace"].contains(&self.advanced.log_level.as_str())
+        {
             return Err(Error::validation(
                 "advanced.log_level",
-                "Log level must be one of: error, warn, info, debug, trace"
+                "Log level must be one of: error, warn, info, debug, trace",
             ));
         }
 
@@ -646,7 +650,7 @@ impl Config {
         let config_dir = dirs::config_dir()
             .ok_or_else(|| Error::config("Could not determine config directory"))?
             .join("cosmarium");
-        
+
         Ok(config_dir.join("config.toml"))
     }
 
@@ -703,7 +707,7 @@ impl Config {
     /// let mut config = Config::default();
     /// let mut other = Config::default();
     /// other.ui.font_size = 16.0;
-    /// 
+    ///
     /// config.merge_from(&other);
     /// assert_eq!(config.ui.font_size, 16.0);
     /// ```
@@ -731,11 +735,11 @@ mod tests {
     fn test_config_validation() {
         let mut config = Config::default();
         assert!(config.validate().is_ok());
-        
+
         // Test invalid font size
         config.ui.font_size = 0.0;
         assert!(config.validate().is_err());
-        
+
         // Reset and test invalid tab size
         config = Config::default();
         config.editor.tab_size = 0;
@@ -747,7 +751,7 @@ mod tests {
         let config = Config::default();
         let toml_str = toml::to_string(&config).unwrap();
         let deserialized: Config = toml::from_str(&toml_str).unwrap();
-        
+
         assert_eq!(config.ui.theme, deserialized.ui.theme);
         assert_eq!(config.editor.font_size, deserialized.editor.font_size);
     }
@@ -756,13 +760,13 @@ mod tests {
     fn test_config_file_operations() {
         let temp_dir = tempdir().unwrap();
         let config_path = temp_dir.path().join("test_config.toml");
-        
+
         let config = Config::default();
-        
+
         // Test save
         assert!(config.save_to_file(&config_path).is_ok());
         assert!(config_path.exists());
-        
+
         // Test load
         let loaded_config = Config::load_from_file(&config_path).unwrap();
         assert_eq!(config.ui.theme, loaded_config.ui.theme);
@@ -772,16 +776,16 @@ mod tests {
     #[test]
     fn test_config_validation_errors() {
         let mut config = Config::default();
-        
+
         // Test font size validation
         config.ui.font_size = 100.0;
         assert!(config.validate().is_err());
-        
+
         // Test window size validation
         config = Config::default();
         config.ui.window_width = 200.0;
         assert!(config.validate().is_err());
-        
+
         // Test log level validation
         config = Config::default();
         config.advanced.log_level = "invalid".to_string();
@@ -792,10 +796,10 @@ mod tests {
     fn test_config_merge() {
         let mut config1 = Config::default();
         let mut config2 = Config::default();
-        
+
         config2.ui.font_size = 20.0;
         config2.editor.tab_size = 8;
-        
+
         config1.merge_from(&config2);
         assert_eq!(config1.ui.font_size, 20.0);
         assert_eq!(config1.editor.tab_size, 8);
@@ -806,7 +810,7 @@ mod tests {
         let mut config = Config::default();
         config.ui.font_size = 20.0;
         config.editor.tab_size = 8;
-        
+
         config.reset_to_defaults();
         assert_eq!(config.ui.font_size, 12.0);
         assert_eq!(config.editor.tab_size, 4);

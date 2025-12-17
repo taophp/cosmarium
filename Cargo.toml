@@ -5,8 +5,9 @@ members = [
     "cosmarium-plugin-api",
     "cosmarium-plugins/markdown-editor",
     "cosmarium-plugins/outline",
+    "cosmarium-plugins/atmosphere",
     "cosmarium-app"
-, "cosmarium-plugins/outline"]
+]
 
 [workspace.package]
 version = "0.1.0"

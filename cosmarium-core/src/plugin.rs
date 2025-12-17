@@ -7,13 +7,13 @@
 //! The plugin system is designed to be flexible and secure, supporting both
 //! native Rust plugins and potentially other plugin types in the future.
 
-use crate::{Error, Result, events::EventBus};
-use cosmarium_plugin_api::{Plugin, PluginInfo, PluginType, PluginContext};
+use crate::{events::EventBus, Error, Result};
+use cosmarium_plugin_api::{Plugin, PluginContext, PluginInfo, PluginType};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{info, warn, error, debug};
+use tracing::{debug, error, info, warn};
 
 /// Plugin management system for Cosmarium.
 ///
@@ -107,10 +107,10 @@ impl PluginManager {
 
         info!("Initializing plugin manager");
         self.event_bus = Some(event_bus);
-        
+
         // Discover available plugins
         self.discover_plugins().await?;
-        
+
         self.initialized = true;
         info!("Plugin manager initialized");
         Ok(())
@@ -203,26 +203,30 @@ impl PluginManager {
         // 1. Finding the plugin binary/library
         // 2. Loading it dynamically
         // 3. Instantiating the plugin
-        
+
         // This is a placeholder - real implementation would use dynamic loading
         match plugin_name {
             "markdown-editor" => {
                 // Create a mock plugin for testing
                 let mut plugin = Box::new(MockPlugin::new(plugin_name));
                 let mut context = PluginContext::new();
-                
+
                 // Initialize the plugin
                 if let Err(e) = plugin.initialize(&mut context) {
-                    return Err(Error::plugin(format!("Failed to initialize plugin '{}': {}", plugin_name, e)));
+                    return Err(Error::plugin(format!(
+                        "Failed to initialize plugin '{}': {}",
+                        plugin_name, e
+                    )));
                 }
 
                 self.loaded_plugins.insert(plugin_name.to_string(), plugin);
-                self.plugin_contexts.insert(plugin_name.to_string(), context);
-                
+                self.plugin_contexts
+                    .insert(plugin_name.to_string(), context);
+
                 info!("Plugin '{}' loaded successfully", plugin_name);
                 Ok(())
             }
-            _ => Err(Error::plugin(format!("Unknown plugin: {}", plugin_name)))
+            _ => Err(Error::plugin(format!("Unknown plugin: {}", plugin_name))),
         }
     }
 
@@ -254,7 +258,10 @@ impl PluginManager {
     /// ```
     pub async fn unload_plugin(&mut self, plugin_name: &str) -> Result<()> {
         if !self.loaded_plugins.contains_key(plugin_name) {
-            return Err(Error::plugin(format!("Plugin '{}' is not loaded", plugin_name)));
+            return Err(Error::plugin(format!(
+                "Plugin '{}' is not loaded",
+                plugin_name
+            )));
         }
 
         info!("Unloading plugin '{}'", plugin_name);
@@ -379,9 +386,14 @@ impl PluginManager {
 
     /// Discover available plugins in the search directories.
     async fn discover_plugins(&mut self) -> Result<()> {
-        debug!("Discovering plugins in directories: {:?}", self.plugin_directories);
-        
-        let dirs: Vec<_> = self.plugin_directories.iter()
+        debug!(
+            "Discovering plugins in directories: {:?}",
+            self.plugin_directories
+        );
+
+        let dirs: Vec<_> = self
+            .plugin_directories
+            .iter()
             .filter(|dir| dir.exists() && dir.is_dir())
             .cloned()
             .collect();
@@ -389,21 +401,24 @@ impl PluginManager {
         for dir in dirs {
             self.scan_directory(&dir).await?;
         }
-        
-        info!("Plugin discovery completed. Found {} plugins", self.registry.count());
+
+        info!(
+            "Plugin discovery completed. Found {} plugins",
+            self.registry.count()
+        );
         Ok(())
     }
 
     /// Scan a directory for plugins.
     async fn scan_directory(&mut self, dir: &Path) -> Result<()> {
         debug!("Scanning directory: {:?}", dir);
-        
+
         // In a real implementation, this would:
         // 1. Look for plugin manifest files (plugin.toml)
         // 2. Look for shared libraries (.so, .dll, .dylib)
         // 3. Validate plugin signatures if required
         // 4. Register discovered plugins
-        
+
         // For now, this is a placeholder
         Ok(())
     }
@@ -467,7 +482,7 @@ impl PluginRegistry {
     pub fn register_plugin(&mut self, info: PluginInfo) {
         let name = info.name.clone();
         let deps = info.dependencies.clone();
-        
+
         self.plugins.insert(name.clone(), info);
         self.dependencies.insert(name, deps);
     }
@@ -593,7 +608,7 @@ impl Plugin for MockPlugin {
             &self.name,
             "0.1.0",
             "Mock plugin for testing",
-            "Cosmarium Core"
+            "Cosmarium Core",
         )
     }
 
@@ -611,7 +626,11 @@ impl Plugin for MockPlugin {
         self.enabled
     }
 
-    fn set_enabled(&mut self, enabled: bool, _ctx: &mut PluginContext) -> cosmarium_plugin_api::Result<()> {
+    fn set_enabled(
+        &mut self,
+        enabled: bool,
+        _ctx: &mut PluginContext,
+    ) -> cosmarium_plugin_api::Result<()> {
         self.enabled = enabled;
         Ok(())
     }
@@ -637,7 +656,7 @@ mod tests {
     async fn test_plugin_manager_initialization() {
         let event_bus = Arc::new(RwLock::new(EventBus::new()));
         let mut manager = PluginManager::new();
-        
+
         assert!(manager.initialize(event_bus).await.is_ok());
         assert!(manager.initialized);
     }
@@ -647,7 +666,7 @@ mod tests {
         let event_bus = Arc::new(RwLock::new(EventBus::new()));
         let mut manager = PluginManager::new();
         manager.initialize(event_bus).await.unwrap();
-        
+
         assert!(manager.load_plugin("markdown-editor").await.is_ok());
         assert!(manager.is_plugin_loaded("markdown-editor"));
         assert_eq!(manager.list_loaded_plugins().len(), 1);
@@ -658,10 +677,10 @@ mod tests {
         let event_bus = Arc::new(RwLock::new(EventBus::new()));
         let mut manager = PluginManager::new();
         manager.initialize(event_bus).await.unwrap();
-        
+
         manager.load_plugin("markdown-editor").await.unwrap();
         assert!(manager.is_plugin_loaded("markdown-editor"));
-        
+
         assert!(manager.unload_plugin("markdown-editor").await.is_ok());
         assert!(!manager.is_plugin_loaded("markdown-editor"));
     }
@@ -670,14 +689,14 @@ mod tests {
     fn test_plugin_registry() {
         let mut registry = PluginRegistry::new();
         assert_eq!(registry.count(), 0);
-        
+
         let info = PluginInfo::new("test", "1.0.0", "Test plugin", "Author");
         registry.register_plugin(info);
-        
+
         assert_eq!(registry.count(), 1);
         assert!(registry.has_plugin("test"));
         assert!(!registry.has_plugin("missing"));
-        
+
         let retrieved = registry.get_plugin("test").unwrap();
         assert_eq!(retrieved.name, "test");
         assert_eq!(retrieved.version, "1.0.0");
@@ -687,11 +706,11 @@ mod tests {
     fn test_mock_plugin() {
         let mut plugin = MockPlugin::new("test");
         let mut context = PluginContext::new();
-        
+
         assert_eq!(plugin.info().name, "test");
         assert!(plugin.is_enabled());
         assert!(plugin.initialize(&mut context).is_ok());
-        
+
         plugin.set_enabled(false, &mut context).unwrap();
         assert!(!plugin.is_enabled());
     }

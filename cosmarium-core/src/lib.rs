@@ -37,12 +37,11 @@ pub mod plugin;
 pub mod project;
 pub mod session;
 
-
 pub use application::Application;
 pub use config::Config;
+pub use cosmarium_plugin_api::event::{Event, EventType};
 pub use document::{Document, DocumentManager};
 pub use error::{Error, Result};
-pub use cosmarium_plugin_api::event::{Event, EventType};
 pub use events::EventBus;
 pub use layout::{Layout, LayoutManager};
 pub use plugin::{PluginManager, PluginRegistry};
@@ -97,7 +96,7 @@ mod integration_tests {
     async fn test_core_plugin_loading() {
         let mut app = Application::new();
         app.initialize().await.unwrap();
-        
+
         let plugin_manager_lock = app.plugin_manager();
         let mut plugin_manager = plugin_manager_lock.write().await;
         assert!(plugin_manager.load_plugin("markdown-editor").await.is_ok());

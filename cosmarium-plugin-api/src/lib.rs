@@ -53,17 +53,13 @@ pub mod event;
 pub mod panel;
 pub mod plugin;
 
-
 pub use context::{PluginContext, SharedState};
 pub use event::{Event, EventHandler, EventType};
-pub use panel::{Panel, PanelPlugin, PanelPosition, PanelSize, PanelContextMenuItem};
+pub use panel::{Panel, PanelContextMenuItem, PanelPlugin, PanelPosition, PanelSize};
 pub use plugin::{Plugin, PluginInfo, PluginType};
-
 
 /// Result type used throughout the plugin API
 pub type Result<T> = std::result::Result<T, anyhow::Error>;
-
-
 
 #[cfg(test)]
 mod tests {

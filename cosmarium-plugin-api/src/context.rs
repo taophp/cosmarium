@@ -4,11 +4,11 @@
 //! with the Cosmarium core and other plugins. It provides access to shared state,
 //! event system, configuration, and other core services.
 
+use crate::{Event, EventHandler};
 use serde::{Deserialize, Serialize};
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
-use crate::{Event, EventHandler};
 
 /// Context object providing plugins access to core services and shared state.
 ///
@@ -414,7 +414,10 @@ mod tests {
         let mut ctx = PluginContext::new();
 
         ctx.set_shared_state("test", "value".to_string());
-        assert_eq!(ctx.get_shared_state::<String>("test"), Some("value".to_string()));
+        assert_eq!(
+            ctx.get_shared_state::<String>("test"),
+            Some("value".to_string())
+        );
         assert_eq!(ctx.get_shared_state::<i32>("test"), None);
     }
 
@@ -432,7 +435,10 @@ mod tests {
         let mut ctx = PluginContext::new();
 
         ctx.set_plugin_data("my-plugin", "counter", 100i32);
-        assert_eq!(ctx.get_plugin_data::<i32>("my-plugin", "counter"), Some(100));
+        assert_eq!(
+            ctx.get_plugin_data::<i32>("my-plugin", "counter"),
+            Some(100)
+        );
         assert_eq!(ctx.get_plugin_data::<i32>("other-plugin", "counter"), None);
         assert_eq!(ctx.get_plugin_data::<String>("my-plugin", "counter"), None);
     }

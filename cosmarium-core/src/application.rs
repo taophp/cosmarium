@@ -8,12 +8,12 @@
 //! provided through plugins, with the core handling coordination and infrastructure.
 
 use crate::{
-    config::Config, error::Result, plugin::PluginManager, project::ProjectManager,
-    document::DocumentManager, layout::LayoutManager, events::EventBus,
+    config::Config, document::DocumentManager, error::Result, events::EventBus,
+    layout::LayoutManager, plugin::PluginManager, project::ProjectManager,
 };
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{info, error, warn};
+use tracing::{error, info, warn};
 
 /// Main application coordinator for Cosmarium.
 ///
@@ -29,12 +29,12 @@ use tracing::{info, error, warn};
 /// # tokio_test::block_on(async {
 /// let mut app = Application::new();
 /// app.initialize().await?;
-/// 
+///
 /// // Load a plugin
 /// let plugin_manager = app.plugin_manager();
 /// let mut manager = plugin_manager.write().await;
 /// manager.load_plugin("markdown-editor").await?;
-/// 
+///
 /// // Application is ready to use
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// # });
@@ -72,7 +72,7 @@ impl Application {
     /// ```
     pub fn new() -> Self {
         info!("Creating new Cosmarium application instance");
-        
+
         Self {
             plugin_manager: Arc::new(RwLock::new(PluginManager::new())),
             project_manager: Arc::new(RwLock::new(ProjectManager::new())),
@@ -131,25 +131,33 @@ impl Application {
         // Initialize all managers
         {
             let mut plugin_manager = self.plugin_manager.write().await;
-            plugin_manager.initialize(Arc::clone(&self.event_bus)).await?;
+            plugin_manager
+                .initialize(Arc::clone(&self.event_bus))
+                .await?;
             info!("Plugin manager initialized");
         }
 
         {
             let mut project_manager = self.project_manager.write().await;
-            project_manager.initialize(Arc::clone(&self.event_bus)).await?;
+            project_manager
+                .initialize(Arc::clone(&self.event_bus))
+                .await?;
             info!("Project manager initialized");
         }
 
         {
             let mut document_manager = self.document_manager.write().await;
-            document_manager.initialize(Arc::clone(&self.event_bus)).await?;
+            document_manager
+                .initialize(Arc::clone(&self.event_bus))
+                .await?;
             info!("Document manager initialized");
         }
 
         {
             let mut layout_manager = self.layout_manager.write().await;
-            layout_manager.initialize(Arc::clone(&self.event_bus)).await?;
+            layout_manager
+                .initialize(Arc::clone(&self.event_bus))
+                .await?;
             info!("Layout manager initialized");
         }
 
@@ -352,7 +360,7 @@ impl Application {
     /// # tokio_test::block_on(async {
     /// let mut app = Application::new();
     /// app.initialize().await?;
-    /// 
+    ///
     /// // In your main loop
     /// app.update().await?;
     /// # Ok::<(), Box<dyn std::error::Error>>(())
@@ -428,7 +436,7 @@ mod tests {
     async fn test_double_initialization() {
         let mut app = Application::new();
         app.initialize().await.unwrap();
-        
+
         // Second initialization should not fail
         assert!(app.initialize().await.is_ok());
         assert!(app.is_initialized());
@@ -438,17 +446,17 @@ mod tests {
     async fn test_update_cycle() {
         let mut app = Application::new();
         app.initialize().await.unwrap();
-        
+
         // Update should work without errors
         assert!(app.update().await.is_ok());
-        
+
         app.shutdown().await.unwrap();
     }
 
     #[tokio::test]
     async fn test_manager_access() {
         let app = Application::new();
-        
+
         // All managers should be accessible
         let _plugin_manager = app.plugin_manager();
         let _project_manager = app.project_manager();

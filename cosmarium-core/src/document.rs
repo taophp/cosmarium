@@ -8,7 +8,7 @@
 //! and provides automatic backup, change tracking, and collaborative editing
 //! features.
 
-use crate::{Error, Result, events::EventBus};
+use crate::{events::EventBus, Error, Result};
 use cosmarium_plugin_api::{Event, EventType};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -149,7 +149,9 @@ impl DocumentManager {
         // across await points. For each document we extract the minimal owned
         // data needed (title, content, owned path) before performing async I/O.
         // After the write succeeds we mark the document saved and emit an event.
-        let ids_to_save: Vec<_> = self.documents.iter()
+        let ids_to_save: Vec<_> = self
+            .documents
+            .iter()
             .filter(|(_, doc)| doc.has_unsaved_changes())
             .map(|(id, _)| *id)
             .collect();
@@ -160,7 +162,11 @@ impl DocumentManager {
             let (title, content, path_opt) = {
                 let doc_ref = self.documents.get(&id).unwrap();
                 // Clone/own the values we need for the write operation.
-                (doc_ref.title().to_string(), doc_ref.content().to_string(), doc_ref.file_path().map(|p| p.to_path_buf()))
+                (
+                    doc_ref.title().to_string(),
+                    doc_ref.content().to_string(),
+                    doc_ref.file_path().map(|p| p.to_path_buf()),
+                )
             };
 
             if let Some(path) = path_opt {
@@ -177,7 +183,10 @@ impl DocumentManager {
                         // Emit document saved event after successful save.
                         if let Some(ref event_bus) = self.event_bus {
                             let bus = event_bus.write().await;
-                            let event = Event::new(EventType::DocumentSaved, format!("Saved document: {}", title));
+                            let event = Event::new(
+                                EventType::DocumentSaved,
+                                format!("Saved document: {}", title),
+                            );
                             let _ = bus.emit(event).await;
                         }
                     }
@@ -258,7 +267,10 @@ impl DocumentManager {
         // Emit document created event
         if let Some(ref event_bus) = self.event_bus {
             let bus = event_bus.write().await;
-            let event = Event::new(EventType::DocumentCreated, format!("Created document: {}", title));
+            let event = Event::new(
+                EventType::DocumentCreated,
+                format!("Created document: {}", title),
+            );
             let _ = bus.emit(event).await;
         }
 
@@ -299,11 +311,13 @@ impl DocumentManager {
     /// ```
     pub async fn open_document<P: AsRef<Path>>(&mut self, path: P) -> Result<Uuid> {
         let path = path.as_ref();
-        let content = tokio::fs::read_to_string(path).await
+        let content = tokio::fs::read_to_string(path)
+            .await
             .map_err(|e| Error::document(format!("Failed to read document: {}", e)))?;
 
         let format = DocumentFormat::from_extension(path.extension().and_then(|s| s.to_str()));
-        let title = path.file_stem()
+        let title = path
+            .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("Untitled")
             .to_string();
@@ -318,7 +332,10 @@ impl DocumentManager {
         // Emit document opened event
         if let Some(ref event_bus) = self.event_bus {
             let bus = event_bus.write().await;
-            let event = Event::new(EventType::DocumentOpened, format!("Opened document: {}", title));
+            let event = Event::new(
+                EventType::DocumentOpened,
+                format!("Opened document: {}", title),
+            );
             let _ = bus.emit(event).await;
         }
 
@@ -367,7 +384,9 @@ impl DocumentManager {
         // Clone the file path into an owned PathBuf to avoid holding a borrow
         // across the await point below.
         let (title, content, path_opt) = {
-            let document = self.documents.get_mut(&document_id)
+            let document = self
+                .documents
+                .get_mut(&document_id)
                 .ok_or_else(|| Error::document("Document not found"))?;
             (
                 document.title().to_string(),
@@ -378,7 +397,8 @@ impl DocumentManager {
 
         // Perform file write outside of any long-lived mutable borrow.
         if let Some(path) = path_opt {
-            tokio::fs::write(&path, content).await
+            tokio::fs::write(&path, content)
+                .await
                 .map_err(|e| Error::document(format!("Failed to write document: {}", e)))?;
 
             // Mark the document saved now that the data has been persisted.
@@ -391,7 +411,10 @@ impl DocumentManager {
             // Emit document saved event after successful save.
             if let Some(ref event_bus) = self.event_bus {
                 let bus = event_bus.write().await;
-                let event = Event::new(EventType::DocumentSaved, format!("Saved document: {}", title));
+                let event = Event::new(
+                    EventType::DocumentSaved,
+                    format!("Saved document: {}", title),
+                );
                 let _ = bus.emit(event).await;
             }
 
@@ -493,8 +516,14 @@ impl DocumentManager {
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// # });
     /// ```
-    pub async fn close_document(&mut self, document_id: Uuid, save_if_modified: bool) -> Result<()> {
-        let document = self.documents.get(&document_id)
+    pub async fn close_document(
+        &mut self,
+        document_id: Uuid,
+        save_if_modified: bool,
+    ) -> Result<()> {
+        let document = self
+            .documents
+            .get(&document_id)
             .ok_or_else(|| Error::document("Document not found"))?;
 
         let title = document.title().to_string();
@@ -508,7 +537,10 @@ impl DocumentManager {
         // Emit document closed event
         if let Some(ref event_bus) = self.event_bus {
             let bus = event_bus.write().await;
-            let event = Event::new(EventType::DocumentClosed, format!("Closed document: {}", title));
+            let event = Event::new(
+                EventType::DocumentClosed,
+                format!("Closed document: {}", title),
+            );
             let _ = bus.emit(event).await;
         }
 
@@ -608,7 +640,8 @@ impl DocumentManager {
 
         // Perform the write outside of any other borrows.
         if let Some(path) = path_opt {
-            tokio::fs::write(&path, content).await
+            tokio::fs::write(&path, content)
+                .await
                 .map_err(|e| Error::document(format!("Failed to write document: {}", e)))?;
 
             // Now mark the document saved using the mutable reference we already have.
@@ -675,7 +708,7 @@ impl Document {
     /// ```
     pub fn new(id: Uuid, title: &str, content: &str, format: DocumentFormat) -> Self {
         let now = SystemTime::now();
-        
+
         Self {
             id,
             title: title.to_string(),
@@ -886,7 +919,7 @@ mod tests {
     async fn test_document_manager_initialization() {
         let event_bus = Arc::new(RwLock::new(EventBus::new()));
         let mut manager = DocumentManager::new();
-        
+
         assert!(manager.initialize(event_bus).await.is_ok());
         assert!(manager.initialized);
     }
@@ -896,13 +929,16 @@ mod tests {
         let event_bus = Arc::new(RwLock::new(EventBus::new()));
         let mut manager = DocumentManager::new();
         manager.initialize(event_bus).await.unwrap();
-        
-        let doc_id = manager.create_document(
-            "Test Document",
-            "This is test content",
-            DocumentFormat::Markdown
-        ).await.unwrap();
-        
+
+        let doc_id = manager
+            .create_document(
+                "Test Document",
+                "This is test content",
+                DocumentFormat::Markdown,
+            )
+            .await
+            .unwrap();
+
         let document = manager.get_document(doc_id).unwrap();
         assert_eq!(document.title(), "Test Document");
         assert_eq!(document.content(), "This is test content");
@@ -915,16 +951,15 @@ mod tests {
         let event_bus = Arc::new(RwLock::new(EventBus::new()));
         let mut manager = DocumentManager::new();
         manager.initialize(event_bus).await.unwrap();
-        
-        let doc_id = manager.create_document(
-            "Test",
-            "Original content",
-            DocumentFormat::PlainText
-        ).await.unwrap();
-        
+
+        let doc_id = manager
+            .create_document("Test", "Original content", DocumentFormat::PlainText)
+            .await
+            .unwrap();
+
         let document = manager.get_document_mut(doc_id).unwrap();
         document.set_content("Modified content");
-        
+
         assert_eq!(document.content(), "Modified content");
         assert!(document.has_unsaved_changes());
     }
@@ -933,20 +968,34 @@ mod tests {
     async fn test_document_formats() {
         assert_eq!(DocumentFormat::Markdown.extension(), "md");
         assert_eq!(DocumentFormat::PlainText.extension(), "txt");
-        
-        assert_eq!(DocumentFormat::from_extension(Some("md")), DocumentFormat::Markdown);
-        assert_eq!(DocumentFormat::from_extension(Some("html")), DocumentFormat::Html);
-        assert_eq!(DocumentFormat::from_extension(None), DocumentFormat::PlainText);
+
+        assert_eq!(
+            DocumentFormat::from_extension(Some("md")),
+            DocumentFormat::Markdown
+        );
+        assert_eq!(
+            DocumentFormat::from_extension(Some("html")),
+            DocumentFormat::Html
+        );
+        assert_eq!(
+            DocumentFormat::from_extension(None),
+            DocumentFormat::PlainText
+        );
     }
 
     #[tokio::test]
     async fn test_document_metadata() {
         let mut metadata = DocumentMetadata::new();
         metadata.tags.push("fiction".to_string());
-        metadata.properties.insert("genre".to_string(), "mystery".to_string());
-        
+        metadata
+            .properties
+            .insert("genre".to_string(), "mystery".to_string());
+
         assert_eq!(metadata.tags.len(), 1);
-        assert_eq!(metadata.properties.get("genre"), Some(&"mystery".to_string()));
+        assert_eq!(
+            metadata.properties.get("genre"),
+            Some(&"mystery".to_string())
+        );
     }
 
     #[tokio::test]
@@ -954,15 +1003,14 @@ mod tests {
         let event_bus = Arc::new(RwLock::new(EventBus::new()));
         let mut manager = DocumentManager::new();
         manager.initialize(event_bus).await.unwrap();
-        
-        let doc_id = manager.create_document(
-            "Test",
-            "Content",
-            DocumentFormat::PlainText
-        ).await.unwrap();
-        
+
+        let doc_id = manager
+            .create_document("Test", "Content", DocumentFormat::PlainText)
+            .await
+            .unwrap();
+
         assert!(manager.get_document(doc_id).is_some());
-        
+
         manager.close_document(doc_id, false).await.unwrap();
         assert!(manager.get_document(doc_id).is_none());
     }
@@ -971,7 +1019,7 @@ mod tests {
     fn test_document_creation_direct() {
         let id = Uuid::new_v4();
         let doc = Document::new(id, "Test", "Content", DocumentFormat::Markdown);
-        
+
         assert_eq!(doc.id(), id);
         assert_eq!(doc.title(), "Test");
         assert_eq!(doc.content(), "Content");

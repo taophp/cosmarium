@@ -72,12 +72,12 @@ impl MarkdownEditor {
     /// Add a state to the undo history.
     pub fn add_to_history(&mut self, content: String) {
         self.undo_history.push(content);
-        
+
         // Limit history size
         if self.undo_history.len() > self.max_undo_history {
             self.undo_history.remove(0);
         }
-        
+
         // Clear redo history when new changes are made
         self.redo_history.clear();
     }
@@ -144,7 +144,7 @@ mod tests {
         let mut editor = MarkdownEditor::new();
         editor.set_selection(5, 15);
         assert_eq!(editor.selection(), Some((5, 15)));
-        
+
         editor.clear_selection();
         assert_eq!(editor.selection(), None);
     }
@@ -152,18 +152,18 @@ mod tests {
     #[test]
     fn test_undo_redo() {
         let mut editor = MarkdownEditor::new();
-        
+
         // Simulate change from "first state" to "second state"
         editor.add_to_history("first state".to_string());
-        
+
         assert!(editor.can_undo());
         assert!(!editor.can_redo());
-        
+
         // Undo from "second state"
         let undone = editor.undo("second state".to_string()).unwrap();
         assert_eq!(undone, "first state");
         assert!(editor.can_redo());
-        
+
         // Redo from "first state"
         let redone = editor.redo("first state".to_string()).unwrap();
         assert_eq!(redone, "second state");

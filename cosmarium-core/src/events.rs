@@ -13,7 +13,7 @@ use crate::{Error, Result};
 use cosmarium_plugin_api::{Event, EventHandler, EventType};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
-use tokio::sync::{RwLock, Mutex};
+use tokio::sync::{Mutex, RwLock};
 use tracing::{debug, error, warn};
 use uuid::Uuid;
 
@@ -138,19 +138,19 @@ impl EventBus {
         }
 
         debug!("Shutting down event bus");
-        
+
         // Clear all handlers
         {
             let mut handlers = self.handlers.write().await;
             handlers.clear();
         }
-        
+
         // Clear event queue
         {
             let mut queue = self.event_queue.lock().await;
             queue.clear();
         }
-        
+
         self.initialized = false;
         debug!("Event bus shutdown completed");
         Ok(())
@@ -208,17 +208,19 @@ impl EventBus {
             id,
             handler,
             priority,
-
         };
 
         let mut handlers = self.handlers.write().await;
         let type_handlers = handlers.entry(event_type).or_insert_with(Vec::new);
         type_handlers.push(entry);
-        
+
         // Sort by priority (highest first)
         type_handlers.sort_by(|a, b| b.priority.cmp(&a.priority));
-        
-        debug!("Subscribed handler {:?} to {:?} events with priority {}", id, event_type, priority);
+
+        debug!(
+            "Subscribed handler {:?} to {:?} events with priority {}",
+            id, event_type, priority
+        );
         Ok(id)
     }
 
@@ -259,11 +261,11 @@ impl EventBus {
     /// ```
     pub async fn unsubscribe(&self, subscription_id: Uuid) -> Result<()> {
         let mut handlers = self.handlers.write().await;
-        
+
         for type_handlers in handlers.values_mut() {
             type_handlers.retain(|entry| entry.id != subscription_id);
         }
-        
+
         debug!("Unsubscribed handler {:?}", subscription_id);
         Ok(())
     }
@@ -332,7 +334,7 @@ impl EventBus {
         }
 
         let mut processed_count = 0;
-        
+
         loop {
             let event = {
                 let mut queue = self.event_queue.lock().await;
@@ -445,12 +447,12 @@ impl EventBus {
     /// Queue an event for later processing.
     async fn queue_event(&self, event: Event) -> Result<()> {
         let mut queue = self.event_queue.lock().await;
-        
+
         if queue.len() >= self.max_queue_size {
             warn!("Event queue is full, dropping oldest event");
             queue.pop_front();
         }
-        
+
         debug!("Queued event: {:?}", event.event_type());
         queue.push_back(event);
         Ok(())
@@ -459,21 +461,27 @@ impl EventBus {
     /// Process an event immediately.
     async fn process_event_immediately(&self, event: Event) -> Result<()> {
         let handlers = self.handlers.read().await;
-        
-        if let Some(type_handlers) = handlers.get(&event.event_type()) {
-            debug!("Processing {:?} event for {} handlers", event.event_type(), type_handlers.len());
-            
-            for handler_entry in type_handlers {
 
-                
+        if let Some(type_handlers) = handlers.get(&event.event_type()) {
+            debug!(
+                "Processing {:?} event for {} handlers",
+                event.event_type(),
+                type_handlers.len()
+            );
+
+            for handler_entry in type_handlers {
                 let mut handler = handler_entry.handler.lock().await;
                 if let Err(e) = handler.handle(&event) {
-                    error!("Handler {:?} failed to process {:?} event: {}", 
-                           handler_entry.id, event.event_type(), e);
+                    error!(
+                        "Handler {:?} failed to process {:?} event: {}",
+                        handler_entry.id,
+                        event.event_type(),
+                        e
+                    );
                 }
             }
         }
-        
+
         Ok(())
     }
 
@@ -495,11 +503,10 @@ impl EventBus {
     /// ```
     pub async fn cleanup_handlers(&self) {
         let mut handlers = self.handlers.write().await;
-        
+
         for type_handlers in handlers.values_mut() {
             let original_count = type_handlers.len();
 
-            
             let removed_count = original_count - type_handlers.len();
             if removed_count > 0 {
                 debug!("Cleaned up {} inactive handlers", removed_count);
@@ -556,15 +563,15 @@ mod tests {
     async fn test_event_subscription() {
         let mut event_bus = EventBus::new();
         event_bus.initialize().await.unwrap();
-        
+
         let call_count = Arc::new(AtomicUsize::new(0));
         let handler = Arc::new(Mutex::new(TestHandler::new(Arc::clone(&call_count))));
-        
+
         let subscription_id = event_bus
             .subscribe(EventType::DocumentChanged, handler, 0)
             .await
             .unwrap();
-        
+
         assert_ne!(subscription_id, Uuid::nil());
         assert_eq!(event_bus.handler_count(EventType::DocumentChanged).await, 1);
     }
@@ -573,21 +580,21 @@ mod tests {
     async fn test_event_emission() {
         let mut event_bus = EventBus::new();
         event_bus.initialize().await.unwrap();
-        
+
         let call_count = Arc::new(AtomicUsize::new(0));
         let handler = Arc::new(Mutex::new(TestHandler::new(Arc::clone(&call_count))));
-        
+
         event_bus
             .subscribe(EventType::DocumentChanged, handler, 0)
             .await
             .unwrap();
-        
+
         let event = Event::new(EventType::DocumentChanged, "Test event");
         event_bus.emit(event).await.unwrap();
-        
+
         // Process events if async processing is enabled
         event_bus.process_events().await.unwrap();
-        
+
         assert_eq!(call_count.load(Ordering::SeqCst), 1);
     }
 
@@ -595,17 +602,17 @@ mod tests {
     async fn test_event_unsubscription() {
         let mut event_bus = EventBus::new();
         event_bus.initialize().await.unwrap();
-        
+
         let call_count = Arc::new(AtomicUsize::new(0));
         let handler = Arc::new(Mutex::new(TestHandler::new(Arc::clone(&call_count))));
-        
+
         let subscription_id = event_bus
             .subscribe(EventType::DocumentChanged, handler, 0)
             .await
             .unwrap();
-        
+
         assert_eq!(event_bus.handler_count(EventType::DocumentChanged).await, 1);
-        
+
         event_bus.unsubscribe(subscription_id).await.unwrap();
         assert_eq!(event_bus.handler_count(EventType::DocumentChanged).await, 0);
     }
@@ -614,9 +621,9 @@ mod tests {
     async fn test_handler_priority() {
         let mut event_bus = EventBus::new();
         event_bus.initialize().await.unwrap();
-        
+
         let call_order = Arc::new(Mutex::new(Vec::new()));
-        
+
         // Create handlers with different priorities
         let handler1 = {
             let call_order = Arc::clone(&call_order);
@@ -626,7 +633,7 @@ mod tests {
                 Ok(())
             }))
         };
-        
+
         let handler2 = {
             let call_order = Arc::clone(&call_order);
             Arc::new(Mutex::new(move |_: &Event| -> anyhow::Result<()> {
@@ -635,7 +642,7 @@ mod tests {
                 Ok(())
             }))
         };
-        
+
         // Note: This test would need a more sophisticated setup to test priority ordering
         // For now, we just test that different priority handlers can be registered
     }
@@ -644,14 +651,14 @@ mod tests {
     async fn test_queue_size() {
         let mut event_bus = EventBus::new();
         event_bus.initialize().await.unwrap();
-        
+
         assert_eq!(event_bus.queue_size().await, 0);
-        
+
         let event = Event::new(EventType::DocumentChanged, "Test");
         event_bus.queue_event(event).await.unwrap();
-        
+
         assert_eq!(event_bus.queue_size().await, 1);
-        
+
         event_bus.process_events().await.unwrap();
         assert_eq!(event_bus.queue_size().await, 0);
     }
@@ -660,15 +667,15 @@ mod tests {
     async fn test_event_bus_shutdown() {
         let mut event_bus = EventBus::new();
         event_bus.initialize().await.unwrap();
-        
+
         let call_count = Arc::new(AtomicUsize::new(0));
         let handler = Arc::new(Mutex::new(TestHandler::new(Arc::clone(&call_count))));
-        
+
         event_bus
             .subscribe(EventType::DocumentChanged, handler, 0)
             .await
             .unwrap();
-        
+
         assert!(event_bus.shutdown().await.is_ok());
         assert!(!event_bus.initialized);
         assert_eq!(event_bus.handler_count(EventType::DocumentChanged).await, 0);
@@ -679,14 +686,23 @@ mod tests {
         let mut event_bus = EventBus::new();
         event_bus.set_max_queue_size(2);
         event_bus.initialize().await.unwrap();
-        
+
         // Add events up to the limit
-        event_bus.queue_event(Event::new(EventType::DocumentChanged, "1")).await.unwrap();
-        event_bus.queue_event(Event::new(EventType::DocumentChanged, "2")).await.unwrap();
+        event_bus
+            .queue_event(Event::new(EventType::DocumentChanged, "1"))
+            .await
+            .unwrap();
+        event_bus
+            .queue_event(Event::new(EventType::DocumentChanged, "2"))
+            .await
+            .unwrap();
         assert_eq!(event_bus.queue_size().await, 2);
-        
+
         // Adding another should drop the oldest
-        event_bus.queue_event(Event::new(EventType::DocumentChanged, "3")).await.unwrap();
+        event_bus
+            .queue_event(Event::new(EventType::DocumentChanged, "3"))
+            .await
+            .unwrap();
         assert_eq!(event_bus.queue_size().await, 2);
     }
 }

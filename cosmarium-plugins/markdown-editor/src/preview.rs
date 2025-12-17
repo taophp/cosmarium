@@ -68,7 +68,7 @@ impl PreviewRenderer {
             opts.insert(Options::ENABLE_SMART_PUNCTUATION);
             opts
         };
-        
+
         #[cfg(not(feature = "live-preview"))]
         let options = Default::default();
 
@@ -109,30 +109,31 @@ impl PreviewRenderer {
         {
             // Apply custom replacements
             let processed_markdown = self.apply_replacements(markdown);
-            
+
             // Parse markdown
             let parser = Parser::new_ext(&processed_markdown, self.options);
-            
+
             // Render to HTML
             let mut html_output = String::new();
             html::push_html(&mut html_output, parser);
-            
+
             // Apply syntax highlighting if enabled
             let final_html = if self.syntax_highlighting {
                 self.apply_syntax_highlighting(html_output)
             } else {
                 html_output
             };
-            
+
             // Wrap in template
-            let full_html = self.template
+            let full_html = self
+                .template
                 .replace("{content}", &final_html)
                 .replace("{css}", &self.custom_css)
                 .replace("{theme}", &self.theme);
-            
+
             Ok(full_html)
         }
-        
+
         #[cfg(not(feature = "live-preview"))]
         {
             Ok(format!("<pre>{}</pre>", markdown))
@@ -166,13 +167,13 @@ impl PreviewRenderer {
         {
             let processed_markdown = self.apply_replacements(markdown);
             let parser = Parser::new_ext(&processed_markdown, self.options);
-            
+
             let mut html_output = String::new();
             html::push_html(&mut html_output, parser);
-            
+
             Ok(html_output)
         }
-        
+
         #[cfg(not(feature = "live-preview"))]
         {
             Ok(format!("<p>{}</p>", markdown))
@@ -287,11 +288,11 @@ impl PreviewRenderer {
     #[allow(dead_code)]
     fn apply_replacements(&self, markdown: &str) -> String {
         let mut result = markdown.to_string();
-        
+
         for (from, to) in &self.replacements {
             result = result.replace(from, to);
         }
-        
+
         result
     }
 
@@ -312,7 +313,7 @@ impl PreviewRenderer {
             "sepia" => Self::sepia_theme_css(),
             _ => Self::default_css(),
         };
-        
+
         self.custom_css = theme_css;
     }
 
@@ -382,7 +383,8 @@ impl PreviewRenderer {
             background-color: #f6f8fa;
             font-weight: 600;
         }
-        "#.to_string()
+        "#
+        .to_string()
     }
 
     /// Get the default HTML template.
@@ -400,7 +402,8 @@ impl PreviewRenderer {
 <body class="theme-{theme}">
     {content}
 </body>
-</html>"#.to_string()
+</html>"#
+            .to_string()
     }
 
     /// Get dark theme CSS.
@@ -451,7 +454,8 @@ impl PreviewRenderer {
         th {
             background-color: #161b22;
         }
-        "#.to_string()
+        "#
+        .to_string()
     }
 
     /// Get light theme CSS.
@@ -491,7 +495,8 @@ impl PreviewRenderer {
             border-left: 4px solid #d4c5a9;
             color: #8b7355;
         }
-        "#.to_string()
+        "#
+        .to_string()
     }
 }
 
@@ -566,7 +571,9 @@ mod tests {
     #[cfg(feature = "live-preview")]
     fn test_code_blocks() {
         let renderer = PreviewRenderer::new();
-        let html = renderer.render_fragment("```rust\nfn main() {}\n```").unwrap();
+        let html = renderer
+            .render_fragment("```rust\nfn main() {}\n```")
+            .unwrap();
         assert!(html.contains("<pre>"));
         assert!(html.contains("<code"));
     }
@@ -576,7 +583,7 @@ mod tests {
         let mut renderer = PreviewRenderer::new();
         renderer.set_theme("dark");
         assert_eq!(renderer.theme(), "dark");
-        
+
         renderer.set_theme("light");
         assert_eq!(renderer.theme(), "light");
     }
@@ -586,7 +593,7 @@ mod tests {
     fn test_text_replacements() {
         let mut renderer = PreviewRenderer::new();
         renderer.add_replacement("--", "—");
-        
+
         let html = renderer.render_fragment("Hello -- world").unwrap();
         assert!(html.contains("Hello — world"));
     }
@@ -602,7 +609,7 @@ mod tests {
     fn test_syntax_highlighting_toggle() {
         let mut renderer = PreviewRenderer::new();
         assert!(renderer.syntax_highlighting());
-        
+
         renderer.set_syntax_highlighting(false);
         assert!(!renderer.syntax_highlighting());
     }
@@ -623,7 +630,7 @@ mod tests {
         let mut renderer = PreviewRenderer::new();
         renderer.add_replacement("test", "replacement");
         renderer.remove_replacement("test");
-        
+
         let html = renderer.render_fragment("test").unwrap();
         assert!(html.contains("test"));
         assert!(!html.contains("replacement"));

@@ -401,7 +401,7 @@ mod tests {
     #[test]
     fn test_event_creation() {
         let event = Event::new(EventType::DocumentChanged, "test data");
-        
+
         assert_eq!(event.event_type(), EventType::DocumentChanged);
         assert_eq!(event.data(), "test data");
         assert!(event.metadata().is_empty());
@@ -415,7 +415,7 @@ mod tests {
         metadata.insert("version".to_string(), "1.0.0".to_string());
 
         let event = Event::with_metadata(EventType::PluginLoaded, "loaded", metadata);
-        
+
         assert_eq!(event.event_type(), EventType::PluginLoaded);
         assert_eq!(event.data(), "loaded");
         assert_eq!(event.get_metadata("plugin"), Some("test-plugin"));
@@ -426,10 +426,10 @@ mod tests {
     #[test]
     fn test_event_metadata_modification() {
         let mut event = Event::new(EventType::Custom, "test");
-        
+
         event.set_metadata("key1", "value1");
         event.set_metadata("key2", "value2");
-        
+
         assert_eq!(event.get_metadata("key1"), Some("value1"));
         assert_eq!(event.get_metadata("key2"), Some("value2"));
         assert_eq!(event.metadata().len(), 2);
@@ -474,10 +474,10 @@ mod tests {
     #[test]
     fn test_event_serialization() {
         let event = Event::new(EventType::DocumentChanged, "test serialization");
-        
+
         let json = serde_json::to_string(&event).unwrap();
         let deserialized: Event = serde_json::from_str(&json).unwrap();
-        
+
         assert_eq!(event.id(), deserialized.id());
         assert_eq!(event.event_type(), deserialized.event_type());
         assert_eq!(event.data(), deserialized.data());

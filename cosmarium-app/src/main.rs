@@ -69,28 +69,28 @@ fn parse_args() -> AppArgs {
                 .long("project")
                 .value_name("FILE")
                 .help("Project file to open on startup")
-                .value_parser(clap::value_parser!(PathBuf))
+                .value_parser(clap::value_parser!(PathBuf)),
         )
         .arg(
             Arg::new("debug")
                 .short('d')
                 .long("debug")
                 .help("Enable debug logging")
-                .action(clap::ArgAction::SetTrue)
+                .action(clap::ArgAction::SetTrue),
         )
         .arg(
             Arg::new("width")
                 .long("width")
                 .value_name("PIXELS")
                 .help("Initial window width")
-                .value_parser(clap::value_parser!(f32))
+                .value_parser(clap::value_parser!(f32)),
         )
         .arg(
             Arg::new("height")
                 .long("height")
                 .value_name("PIXELS")
                 .help("Initial window height")
-                .value_parser(clap::value_parser!(f32))
+                .value_parser(clap::value_parser!(f32)),
         )
         .get_matches();
 
@@ -133,10 +133,10 @@ fn main() -> anyhow::Result<()> {
         Box::new(move |cc| {
             // Set up custom fonts
             setup_custom_fonts(&cc.egui_ctx);
-            
+
             // Configure visuals
             setup_visuals(&cc.egui_ctx);
-            
+
             Ok(Box::new(app::Cosmarium::new(cc, args.clone())))
         }),
     );
@@ -183,16 +183,15 @@ fn load_icon() -> egui::IconData {
         for (i, pixel) in icon_data.chunks_mut(4).enumerate() {
             let x = i % 32;
             let y = i / 32;
-            
+
             // Purple background
             pixel[0] = 128; // R
-            pixel[1] = 64;  // G
+            pixel[1] = 64; // G
             pixel[2] = 192; // B
             pixel[3] = 255; // A
-            
+
             // Simple "C" shape in white
-            if (x >= 8 && x <= 24 && (y == 8 || y == 23)) ||
-               (x == 8 && y >= 8 && y <= 23) {
+            if (x >= 8 && x <= 24 && (y == 8 || y == 23)) || (x == 8 && y >= 8 && y <= 23) {
                 pixel[0] = 255; // R
                 pixel[1] = 255; // G
                 pixel[2] = 255; // B

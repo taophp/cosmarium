@@ -1057,6 +1057,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "cosmarium-atmosphere",
  "cosmarium-core",
  "cosmarium-markdown-editor",
  "cosmarium-outline",
@@ -1075,6 +1076,17 @@ dependencies = [
  "uuid",
  "wasm-bindgen-futures",
  "web-sys",
+]
+
+[[package]]
+name = "cosmarium-atmosphere"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cosmarium-plugin-api",
+ "egui 0.33.2",
+ "serde",
+ "tracing",
 ]
 
 [[package]]

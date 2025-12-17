@@ -19,6 +19,7 @@ cosmarium-core = { path = "../cosmarium-core" }
 cosmarium-plugin-api = { path = "../cosmarium-plugin-api" }
 cosmarium-markdown-editor = { path = "../cosmarium-plugins/markdown-editor" }
 cosmarium-outline = { path = "../cosmarium-plugins/outline" }
+cosmarium-atmosphere = { path = "../cosmarium-plugins/atmosphere" }
 
 eframe = { workspace = true }
 egui = { workspace = true }

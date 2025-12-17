@@ -5,16 +5,17 @@
 //! layout management, and core application functionality.
 
 use crate::AppArgs;
-use cosmarium_core::{Application, PluginManager, Layout, LayoutManager, Config, Result};
-use cosmarium_plugin_api::{Plugin, PluginContext, PanelPlugin, Event, EventType};
-use cosmarium_outline::OutlinePlugin;
+use cosmarium_atmosphere::AtmospherePlugin;
+use cosmarium_core::Session;
+use cosmarium_core::{Application, Config, Layout, LayoutManager, PluginManager, Result};
 use cosmarium_markdown_editor::MarkdownEditorPlugin;
+use cosmarium_outline::OutlinePlugin;
+use cosmarium_plugin_api::{Event, EventType, PanelPlugin, Plugin, PluginContext};
 use eframe::egui;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 use uuid::Uuid;
-use cosmarium_core::Session;
 
 /// Main Cosmarium application state
 pub struct Cosmarium {
@@ -22,6 +23,8 @@ pub struct Cosmarium {
     core_app: Application,
     /// Plugin context for inter-plugin communication
     plugin_context: PluginContext,
+    /// Current smoothed sentiment value (for transitions)
+    current_sentiment: f32,
     /// Currently loaded plugins
     plugins: HashMap<String, Box<dyn Plugin>>,
     /// Panel plugins for UI rendering
@@ -129,6 +132,7 @@ impl Cosmarium {
         let mut app = Self {
             core_app: Application::new(),
             plugin_context: PluginContext::new(),
+            current_sentiment: 0.0,
             plugins: HashMap::new(),
             panel_plugins: HashMap::new(),
             config: Config::default(),
@@ -175,7 +179,7 @@ impl Cosmarium {
                 }
             }
         }
-        
+
         // Sync recent projects from session to app state (for UI access)
         app.recent_projects = app.session.recent_projects.clone();
 
@@ -189,9 +193,7 @@ impl Cosmarium {
         // Initialize core application (this is async, so we need a runtime)
         let rt = tokio::runtime::Runtime::new()
             .map_err(|e| anyhow::anyhow!("Failed to create Tokio runtime: {}", e))?;
-        rt.block_on(async {
-            self.core_app.initialize().await
-        })?;
+        rt.block_on(async { self.core_app.initialize().await })?;
 
         // Load recent projects
         let project_manager = Arc::clone(&self.core_app.project_manager());
@@ -210,11 +212,14 @@ impl Cosmarium {
         // Emit application startup event
         let event = Event::new(
             EventType::ApplicationStartup,
-            format!("Cosmarium v{} started", env!("CARGO_PKG_VERSION"))
+            format!("Cosmarium v{} started", env!("CARGO_PKG_VERSION")),
         );
         self.plugin_context.emit_event(event);
 
-        tracing::info!("Application initialized in {:?}", self.startup_time.elapsed());
+        tracing::info!(
+            "Application initialized in {:?}",
+            self.startup_time.elapsed()
+        );
         Ok(())
     }
 
@@ -223,10 +228,11 @@ impl Cosmarium {
         // Load markdown editor plugin
         let mut markdown_editor = MarkdownEditorPlugin::new();
         markdown_editor.initialize(&mut self.plugin_context)?;
-        
+
         let plugin_name = markdown_editor.info().name.clone();
-        self.panel_plugins.insert(plugin_name.clone(), Box::new(markdown_editor));
-        
+        self.panel_plugins
+            .insert(plugin_name.clone(), Box::new(markdown_editor));
+
         // Mark the editor panel as open by default
         self.ui_state.open_panels.insert(plugin_name, true);
 
@@ -235,17 +241,26 @@ impl Cosmarium {
         outline_plugin.initialize(&mut self.plugin_context)?;
 
         let outline_plugin_name = outline_plugin.info().name.clone();
-        self.panel_plugins.insert(outline_plugin_name.clone(), Box::new(outline_plugin));
+        self.panel_plugins
+            .insert(outline_plugin_name.clone(), Box::new(outline_plugin));
         // Outline panel is not open by default, so no need to add to open_panels
 
-        tracing::info!("Core plugins loaded");
+        // Load atmosphere plugin
+        let mut atmosphere_plugin = AtmospherePlugin::new();
+        atmosphere_plugin.initialize(&mut self.plugin_context)?;
+
+        let atmosphere_name = atmosphere_plugin.info().name.clone();
+        self.plugins
+            .insert(atmosphere_name, Box::new(atmosphere_plugin));
+
+        tracing::info!("Core plugins loaded. Total plugins: {}", self.plugins.len());
         Ok(())
     }
 
     /// Get the current Git branch name if a project is open.
     fn get_current_branch(&self) -> Option<String> {
         let project_manager = Arc::clone(&self.core_app.project_manager());
-        
+
         let rt = tokio::runtime::Runtime::new().ok()?;
         rt.block_on(async {
             let pm = project_manager.read().await;
@@ -261,25 +276,28 @@ impl Cosmarium {
     /// Load a project from the specified path.
     fn load_project(&mut self, path: &std::path::Path) -> Result<()> {
         tracing::info!("Loading project from {:?}", path);
-        
+
         // TODO: Implement actual project loading
         self.current_project = Some(path.to_path_buf());
-        
+
         let event = Event::new(
             EventType::ProjectOpened,
-            format!("Opened project: {}", path.display())
+            format!("Opened project: {}", path.display()),
         );
         self.plugin_context.emit_event(event);
-        
+
         Ok(())
     }
 
     /// Synchronize content from the editor plugin to the document manager
     fn sync_editor_content(&mut self) {
         let document_manager = self.core_app.document_manager();
-        
+
         // Check if there's new content from the editor
-        if let Some(content) = self.plugin_context.get_shared_state::<String>("markdown_editor_content") {
+        if let Some(content) = self
+            .plugin_context
+            .get_shared_state::<String>("markdown_editor_content")
+        {
             if let Some(doc_id) = self.active_document_id {
                 // Use a blocking runtime to acquire the write lock deterministically
                 let rt = match tokio::runtime::Runtime::new() {
@@ -308,7 +326,10 @@ impl Cosmarium {
         let rt = match tokio::runtime::Runtime::new() {
             Ok(r) => r,
             Err(e) => {
-                tracing::error!("Failed to create Tokio runtime for check_unsaved_changes: {}", e);
+                tracing::error!(
+                    "Failed to create Tokio runtime for check_unsaved_changes: {}",
+                    e
+                );
                 return true; // Conservative: assume there are unsaved changes
             }
         };
@@ -344,9 +365,11 @@ impl Cosmarium {
     fn save_current_project(&mut self) -> Result<()> {
         // Sync editor content first
         self.sync_editor_content();
-        
+
         // Capture editor content (if any) before entering async block
-        let editor_content = self.plugin_context.get_shared_state::<String>("markdown_editor_content");
+        let editor_content = self
+            .plugin_context
+            .get_shared_state::<String>("markdown_editor_content");
 
         let project_manager = self.core_app.project_manager();
         let document_manager = self.core_app.document_manager();
@@ -477,24 +500,24 @@ impl Cosmarium {
     /// Open a project asynchronously (called from file dialog).
     fn open_project_async(&mut self, path: std::path::PathBuf) -> Result<()> {
         tracing::info!("Opening project from {:?}", path);
-        
+
         // Clone the Arc to avoid lifetime issues
         let project_manager = Arc::clone(&self.core_app.project_manager());
         let path_clone = path.clone();
-        
+
         let rt = tokio::runtime::Runtime::new()
             .map_err(|e| anyhow::anyhow!("Failed to create Tokio runtime: {}", e))?;
         rt.block_on(async move {
             let mut pm = project_manager.write().await;
             pm.open_project(&path_clone).await
         })?;
-        
+
         self.current_project = Some(path.clone());
-        
+
         // Load first document into editor (if any)
         let project_manager = Arc::clone(&self.core_app.project_manager());
         let document_manager = Arc::clone(&self.core_app.document_manager());
-        
+
         let rt2 = tokio::runtime::Runtime::new()
             .map_err(|e| anyhow::anyhow!("Failed to create Tokio runtime: {}", e))?;
         let pm_clone = Arc::clone(&project_manager);
@@ -535,23 +558,29 @@ impl Cosmarium {
                                 return (Some(new_id), Some(doc.content().to_string()));
                             }
                         }
-                        Err(e) => tracing::error!("Failed to open document from path {:?}: {}", path, e),
+                        Err(e) => {
+                            tracing::error!("Failed to open document from path {:?}: {}", path, e)
+                        }
                     }
                 }
             }
 
             (None, None)
         });
-        
+
         // Set active document and content in editor if we got any
         self.active_document_id = doc_id_opt;
         if let Some(content) = doc_content {
-            self.plugin_context.set_shared_state("markdown_editor_content", content.clone());
+            self.plugin_context
+                .set_shared_state("markdown_editor_content", content.clone());
             // Also write plugin-specific data as a fallback synchronization channel
-            self.plugin_context.set_plugin_data("markdown-editor", "loaded_content", content.clone());
-
+            self.plugin_context.set_plugin_data(
+                "markdown-editor",
+                "loaded_content",
+                content.clone(),
+            );
         }
-        
+
         // Update recent projects list
         let rt3 = tokio::runtime::Runtime::new()
             .map_err(|e| anyhow::anyhow!("Failed to create Tokio runtime: {}", e))?;
@@ -560,45 +589,47 @@ impl Cosmarium {
             pm.recent_projects().to_vec()
         });
         self.recent_projects = recent;
-        
+
         // Get current Git branch
         self.current_branch = self.get_current_branch();
 
         // Update session
-        self.session.add_recent_project(path.clone(), self.config.app.max_recent_projects);
+        self.session
+            .add_recent_project(path.clone(), self.config.app.max_recent_projects);
         self.session.last_opened_project = Some(path);
         if let Err(e) = self.session.save() {
             tracing::warn!("Failed to save session: {}", e);
         }
-        
+
         // Update UI list
         self.recent_projects = self.session.recent_projects.clone();
-        
+
         // Request focus for the editor
-        self.plugin_context.set_shared_state("markdown_editor_focus_requested", true);
-        
+        self.plugin_context
+            .set_shared_state("markdown_editor_focus_requested", true);
+
         Ok(())
     }
 
     /// Create a new project with the given parameters.
     fn create_new_project(&mut self, name: String, path: String, template: String) -> Result<()> {
         let project_path = std::path::PathBuf::from(&path).join(&name);
-        
+
         tracing::info!("Creating new project '{}' at {:?}", name, project_path);
-        
+
         let project_manager = Arc::clone(&self.core_app.project_manager());
         let project_path_clone = project_path.clone();
         let path_buf = project_path.clone();
-        
+
         let rt = tokio::runtime::Runtime::new()
             .map_err(|e| anyhow::anyhow!("Failed to create Tokio runtime: {}", e))?;
         rt.block_on(async move {
             let mut pm = project_manager.write().await;
             pm.create_project(&name, &path_buf, &template).await
         })?;
-        
+
         self.current_project = Some(project_path.clone());
-        
+
         // Update recent projects list
         let rt2 = tokio::runtime::Runtime::new()
             .map_err(|e| anyhow::anyhow!("Failed to create Tokio runtime: {}", e))?;
@@ -608,21 +639,23 @@ impl Cosmarium {
             pm.recent_projects().to_vec()
         });
         self.recent_projects = recent;
-        
+
         // Get current Git branch
         self.current_branch = self.get_current_branch();
 
         // Update session
-        self.session.add_recent_project(project_path.clone(), self.config.app.max_recent_projects);
+        self.session
+            .add_recent_project(project_path.clone(), self.config.app.max_recent_projects);
         self.session.last_opened_project = Some(project_path);
         if let Err(e) = self.session.save() {
             tracing::warn!("Failed to save session: {}", e);
         }
         self.recent_projects = self.session.recent_projects.clone();
-        
+
         // Request focus for the editor
-        self.plugin_context.set_shared_state("markdown_editor_focus_requested", true);
-        
+        self.plugin_context
+            .set_shared_state("markdown_editor_focus_requested", true);
+
         Ok(())
     }
 
@@ -645,11 +678,11 @@ impl Cosmarium {
                 visuals.widgets.inactive.bg_fill = egui::Color32::TRANSPARENT;
                 visuals.widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
                 visuals.widgets.inactive.bg_stroke = egui::Stroke::NONE;
-                
+
                 visuals.widgets.hovered.bg_stroke = egui::Stroke::NONE;
                 visuals.widgets.active.bg_stroke = egui::Stroke::NONE;
                 visuals.widgets.open.bg_stroke = egui::Stroke::NONE;
-                
+
                 ui.ctx().set_visuals(visuals);
 
                 // Burger menu button
@@ -657,15 +690,16 @@ impl Cosmarium {
                     self.ui_state.menu_expanded = true;
                     self.ui_state.active_menu = Some(MenuId::Cosmarium);
                 }
-                
+
                 // Project name button (now a submenu)
-                let project_name = self.current_project
+                let project_name = self
+                    .current_project
                     .as_ref()
                     .and_then(|p| p.file_name())
                     .and_then(|n| n.to_str())
                     .unwrap_or("No Project")
                     .to_string();
-                    
+
                 ui.menu_button(project_name, |ui| {
                     ui.set_min_width(200.0);
                     ui.with_layout(egui::Layout::top_down_justified(egui::Align::Min), |ui| {
@@ -674,30 +708,31 @@ impl Cosmarium {
                         } else {
                             let mut path_to_open = None;
                             for path in &self.recent_projects {
-                                let label = path.file_name()
+                                let label = path
+                                    .file_name()
                                     .and_then(|n| n.to_str())
                                     .unwrap_or("Unknown Project");
-                                    
+
                                 if ui.button(label).clicked() {
                                     path_to_open = Some(path.clone());
                                     ui.close_menu();
                                 }
                             }
-                            
+
                             if let Some(path) = path_to_open {
                                 if let Err(e) = self.open_project_async(path) {
                                     tracing::error!("Failed to open recent project: {}", e);
                                 }
                             }
                         }
-                        
+
                         ui.separator();
-                        
+
                         if ui.button("New").clicked() {
                             ui.close_menu();
                             self.show_new_project_dialog = true;
                         }
-                        
+
                         if ui.button("Open").clicked() {
                             ui.close_menu();
                             // Open project selector
@@ -726,187 +761,285 @@ impl Cosmarium {
                 visuals.widgets.inactive.bg_fill = egui::Color32::TRANSPARENT;
                 visuals.widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
                 visuals.widgets.inactive.bg_stroke = egui::Stroke::NONE;
-                
+
                 visuals.widgets.hovered.bg_stroke = egui::Stroke::NONE;
                 visuals.widgets.active.bg_stroke = egui::Stroke::NONE;
                 visuals.widgets.open.bg_stroke = egui::Stroke::NONE;
-                
+
                 visuals.widgets.noninteractive.bg_stroke.width = 0.5;
                 visuals.window_stroke.width = 0.5;
-                
+
                 ui.ctx().set_visuals(visuals);
 
                 // Helper closure to render a menu item
-                let mut render_menu_item = |ui: &mut egui::Ui, id: MenuId, label: &str, content: Box<dyn FnOnce(&mut Self, &mut egui::Ui)>| {
-                    let button_response = ui.button(label);
-                    
-                    // Click logic: toggle menu
-                    if button_response.clicked() {
-                        if self.ui_state.active_menu == Some(id) {
-                            self.ui_state.active_menu = None;
-                            self.ui_state.menu_expanded = false;
-                        } else {
-                            self.ui_state.active_menu = Some(id);
-                        }
-                    }
-                    
-                    // Hover logic: switch if another menu is open
-                    if self.ui_state.active_menu.is_some() && button_response.hovered() {
-                        self.ui_state.active_menu = Some(id);
-                    }
-                    
-                    // Popup rendering
-                    if self.ui_state.active_menu == Some(id) {
-                        let popup_id = ui.make_persistent_id(format!("{}_popup", label));
-                        
-                        // Sync with egui's internal state to ensure popup_below_widget renders
-                        if !ui.memory(|m| m.is_popup_open(popup_id)) {
-                            ui.memory_mut(|m| m.open_popup(popup_id));
-                        }
-                        
-                        egui::popup_below_widget(ui, popup_id, &button_response, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
-                            ui.set_min_width(150.0);
-                            ui.with_layout(egui::Layout::top_down_justified(egui::Align::Min), |ui| {
-                                content(self, ui);
-                            });
-                        });
-                    }
-                };
+                let mut render_menu_item =
+                    |ui: &mut egui::Ui,
+                     id: MenuId,
+                     label: &str,
+                     content: Box<dyn FnOnce(&mut Self, &mut egui::Ui)>| {
+                        let button_response = ui.button(label);
 
-                // Cosmarium Menu
-                render_menu_item(ui, MenuId::Cosmarium, "Cosmarium", Box::new(|app, ui| {
-                    if ui.button("About").clicked() {
-                        app.show_about = true;
-                        app.ui_state.menu_expanded = false;
-                        app.ui_state.active_menu = None;
-                    }
-                    if ui.button("Settings").clicked() {
-                        app.show_settings = true;
-                        app.ui_state.menu_expanded = false;
-                        app.ui_state.active_menu = None;
-                    }
-                    ui.separator();
-                    if ui.add(egui::Button::new("Exit").shortcut_text(egui::RichText::new("Ctrl+Q").size(12.0).weak())).clicked() {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                    }
-                }));
-
-                // File Menu
-                render_menu_item(ui, MenuId::File, "File", Box::new(|app, ui| {
-                    if ui.add(egui::Button::new("New Project").shortcut_text(egui::RichText::new("Ctrl+N").size(12.0).weak())).clicked() {
-                        app.show_new_project_dialog = true;
-                        app.ui_state.active_menu = None;
-                        app.ui_state.menu_expanded = false;
-                    }
-                    if ui.add(egui::Button::new("Open Project").shortcut_text(egui::RichText::new("Ctrl+O").size(12.0).weak())).clicked() {
-                        // We need to close the menu before opening the dialog to avoid UI glitches
-                        app.ui_state.active_menu = None;
-                        app.ui_state.menu_expanded = false;
-                        
-                        // Use a separate thread or deferred action for file dialog if possible, 
-                        // but here we just call it. Note: rfd might block.
-                        if let Some(path) = rfd::FileDialog::new()
-                            .set_title("Open Project")
-                            .pick_folder()
-                        {
-                            if let Err(e) = app.open_project_async(path) {
-                                tracing::error!("Failed to open project: {}", e);
+                        // Click logic: toggle menu
+                        if button_response.clicked() {
+                            if self.ui_state.active_menu == Some(id) {
+                                self.ui_state.active_menu = None;
+                                self.ui_state.menu_expanded = false;
+                            } else {
+                                self.ui_state.active_menu = Some(id);
                             }
                         }
-                    }
-                    
 
-
-                    if ui.add(egui::Button::new("Save Project").shortcut_text(egui::RichText::new("Ctrl+S").size(12.0).weak())).clicked() {
-                        if let Err(e) = app.save_current_project() {
-                            tracing::error!("Failed to save project: {}", e);
+                        // Hover logic: switch if another menu is open
+                        if self.ui_state.active_menu.is_some() && button_response.hovered() {
+                            self.ui_state.active_menu = Some(id);
                         }
-                        app.ui_state.active_menu = None;
-                        app.ui_state.menu_expanded = false;
-                    }
-                    ui.separator();
-                    if ui.button("Export...").clicked() {
-                        app.ui_state.active_menu = None;
-                        app.ui_state.menu_expanded = false;
-                    }
-                }));
+
+                        // Popup rendering
+                        if self.ui_state.active_menu == Some(id) {
+                            let popup_id = ui.make_persistent_id(format!("{}_popup", label));
+
+                            // Sync with egui's internal state to ensure popup_below_widget renders
+                            if !ui.memory(|m| m.is_popup_open(popup_id)) {
+                                ui.memory_mut(|m| m.open_popup(popup_id));
+                            }
+
+                            egui::popup_below_widget(
+                                ui,
+                                popup_id,
+                                &button_response,
+                                egui::PopupCloseBehavior::CloseOnClickOutside,
+                                |ui| {
+                                    ui.set_min_width(150.0);
+                                    ui.with_layout(
+                                        egui::Layout::top_down_justified(egui::Align::Min),
+                                        |ui| {
+                                            content(self, ui);
+                                        },
+                                    );
+                                },
+                            );
+                        }
+                    };
+
+                // Cosmarium Menu
+                render_menu_item(
+                    ui,
+                    MenuId::Cosmarium,
+                    "Cosmarium",
+                    Box::new(|app, ui| {
+                        if ui.button("About").clicked() {
+                            app.show_about = true;
+                            app.ui_state.menu_expanded = false;
+                            app.ui_state.active_menu = None;
+                        }
+                        if ui.button("Settings").clicked() {
+                            app.show_settings = true;
+                            app.ui_state.menu_expanded = false;
+                            app.ui_state.active_menu = None;
+                        }
+                        ui.separator();
+                        if ui
+                            .add(
+                                egui::Button::new("Exit")
+                                    .shortcut_text(egui::RichText::new("Ctrl+Q").size(12.0).weak()),
+                            )
+                            .clicked()
+                        {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        }
+                    }),
+                );
+
+                // File Menu
+                render_menu_item(
+                    ui,
+                    MenuId::File,
+                    "File",
+                    Box::new(|app, ui| {
+                        if ui
+                            .add(
+                                egui::Button::new("New Project")
+                                    .shortcut_text(egui::RichText::new("Ctrl+N").size(12.0).weak()),
+                            )
+                            .clicked()
+                        {
+                            app.show_new_project_dialog = true;
+                            app.ui_state.active_menu = None;
+                            app.ui_state.menu_expanded = false;
+                        }
+                        if ui
+                            .add(
+                                egui::Button::new("Open Project")
+                                    .shortcut_text(egui::RichText::new("Ctrl+O").size(12.0).weak()),
+                            )
+                            .clicked()
+                        {
+                            // We need to close the menu before opening the dialog to avoid UI glitches
+                            app.ui_state.active_menu = None;
+                            app.ui_state.menu_expanded = false;
+
+                            // Use a separate thread or deferred action for file dialog if possible,
+                            // but here we just call it. Note: rfd might block.
+                            if let Some(path) = rfd::FileDialog::new()
+                                .set_title("Open Project")
+                                .pick_folder()
+                            {
+                                if let Err(e) = app.open_project_async(path) {
+                                    tracing::error!("Failed to open project: {}", e);
+                                }
+                            }
+                        }
+
+                        if ui
+                            .add(
+                                egui::Button::new("Save Project")
+                                    .shortcut_text(egui::RichText::new("Ctrl+S").size(12.0).weak()),
+                            )
+                            .clicked()
+                        {
+                            if let Err(e) = app.save_current_project() {
+                                tracing::error!("Failed to save project: {}", e);
+                            }
+                            app.ui_state.active_menu = None;
+                            app.ui_state.menu_expanded = false;
+                        }
+                        ui.separator();
+                        if ui.button("Export...").clicked() {
+                            app.ui_state.active_menu = None;
+                            app.ui_state.menu_expanded = false;
+                        }
+                    }),
+                );
 
                 // Edit Menu
-                render_menu_item(ui, MenuId::Edit, "Edit", Box::new(|app, ui| {
-                    if ui.add(egui::Button::new("Undo").shortcut_text(egui::RichText::new("Ctrl+Z").size(12.0).weak())).clicked() { app.ui_state.active_menu = None; app.ui_state.menu_expanded = false; }
-                    if ui.add(egui::Button::new("Redo").shortcut_text(egui::RichText::new("Ctrl+Y").size(12.0).weak())).clicked() { app.ui_state.active_menu = None; app.ui_state.menu_expanded = false; }
-                    ui.separator();
-                    if ui.button("Cut").clicked() { app.ui_state.active_menu = None; app.ui_state.menu_expanded = false; }
-                    if ui.button("Copy").clicked() { app.ui_state.active_menu = None; app.ui_state.menu_expanded = false; }
-                    if ui.button("Paste").clicked() { app.ui_state.active_menu = None; app.ui_state.menu_expanded = false; }
-                }));
+                render_menu_item(
+                    ui,
+                    MenuId::Edit,
+                    "Edit",
+                    Box::new(|app, ui| {
+                        if ui
+                            .add(
+                                egui::Button::new("Undo")
+                                    .shortcut_text(egui::RichText::new("Ctrl+Z").size(12.0).weak()),
+                            )
+                            .clicked()
+                        {
+                            app.ui_state.active_menu = None;
+                            app.ui_state.menu_expanded = false;
+                        }
+                        if ui
+                            .add(
+                                egui::Button::new("Redo")
+                                    .shortcut_text(egui::RichText::new("Ctrl+Y").size(12.0).weak()),
+                            )
+                            .clicked()
+                        {
+                            app.ui_state.active_menu = None;
+                            app.ui_state.menu_expanded = false;
+                        }
+                        ui.separator();
+                        if ui.button("Cut").clicked() {
+                            app.ui_state.active_menu = None;
+                            app.ui_state.menu_expanded = false;
+                        }
+                        if ui.button("Copy").clicked() {
+                            app.ui_state.active_menu = None;
+                            app.ui_state.menu_expanded = false;
+                        }
+                        if ui.button("Paste").clicked() {
+                            app.ui_state.active_menu = None;
+                            app.ui_state.menu_expanded = false;
+                        }
+                    }),
+                );
 
                 // View Menu
-                render_menu_item(ui, MenuId::View, "View", Box::new(|app, ui| {
-                    // We need to collect changes to avoid borrowing issues
-                    let mut panels_to_toggle = Vec::new();
-                    
-                    for (panel_name, panel_plugin) in &app.panel_plugins {
-                        if !panel_plugin.is_closable() {
-                            continue;
+                render_menu_item(
+                    ui,
+                    MenuId::View,
+                    "View",
+                    Box::new(|app, ui| {
+                        // We need to collect changes to avoid borrowing issues
+                        let mut panels_to_toggle = Vec::new();
+
+                        for (panel_name, panel_plugin) in &app.panel_plugins {
+                            if !panel_plugin.is_closable() {
+                                continue;
+                            }
+                            let is_open =
+                                app.ui_state.open_panels.get(panel_name).unwrap_or(&false);
+                            let mut open = *is_open;
+
+                            if ui.checkbox(&mut open, panel_plugin.panel_title()).clicked() {
+                                panels_to_toggle.push((panel_name.clone(), open));
+                                // Don't close menu for checkboxes usually
+                            }
                         }
-                        let is_open = app.ui_state.open_panels.get(panel_name).unwrap_or(&false);
-                        let mut open = *is_open;
-                        
-                        if ui.checkbox(&mut open, panel_plugin.panel_title()).clicked() {
-                            panels_to_toggle.push((panel_name.clone(), open));
-                            // Don't close menu for checkboxes usually
+
+                        for (name, open) in panels_to_toggle {
+                            app.ui_state.open_panels.insert(name, open);
                         }
-                    }
-                    
-                    for (name, open) in panels_to_toggle {
-                        app.ui_state.open_panels.insert(name, open);
-                    }
-                    
-                    ui.separator();
-                    
-                    if ui.checkbox(&mut app.ui_state.show_menu_bar, "Menu Bar").clicked() {
-                        // app.ui_state.active_menu = None; // Optional
-                    }
-                    if ui.checkbox(&mut app.ui_state.show_status_bar, "Status Bar").clicked() {
-                        // app.ui_state.active_menu = None; // Optional
-                    }
-                }));
+
+                        ui.separator();
+
+                        if ui
+                            .checkbox(&mut app.ui_state.show_menu_bar, "Menu Bar")
+                            .clicked()
+                        {
+                            // app.ui_state.active_menu = None; // Optional
+                        }
+                        if ui
+                            .checkbox(&mut app.ui_state.show_status_bar, "Status Bar")
+                            .clicked()
+                        {
+                            // app.ui_state.active_menu = None; // Optional
+                        }
+                    }),
+                );
 
                 // Tools Menu
-                render_menu_item(ui, MenuId::Tools, "Tools", Box::new(|app, ui| {
-                    if ui.button("Plugin Manager").clicked() {
-                        app.show_plugin_manager = true;
-                        app.ui_state.active_menu = None;
-                        app.ui_state.menu_expanded = false;
-                    }
-                    if ui.button("Settings").clicked() {
-                        app.show_settings = true;
-                        app.ui_state.active_menu = None;
-                        app.ui_state.menu_expanded = false;
-                    }
-                }));
+                render_menu_item(
+                    ui,
+                    MenuId::Tools,
+                    "Tools",
+                    Box::new(|app, ui| {
+                        if ui.button("Plugin Manager").clicked() {
+                            app.show_plugin_manager = true;
+                            app.ui_state.active_menu = None;
+                            app.ui_state.menu_expanded = false;
+                        }
+                        if ui.button("Settings").clicked() {
+                            app.show_settings = true;
+                            app.ui_state.active_menu = None;
+                            app.ui_state.menu_expanded = false;
+                        }
+                    }),
+                );
 
                 // Help Menu
-                render_menu_item(ui, MenuId::Help, "Help", Box::new(|app, ui| {
-                    if ui.button("About Cosmarium").clicked() {
-                        app.show_about = true;
-                        app.ui_state.active_menu = None;
-                        app.ui_state.menu_expanded = false;
-                    }
-                    if ui.button("Documentation").clicked() {
-                        app.ui_state.active_menu = None;
-                        app.ui_state.menu_expanded = false;
-                    }
-                    if ui.button("Report Issue").clicked() {
-                        app.ui_state.active_menu = None;
-                        app.ui_state.menu_expanded = false;
-                    }
-                }));
-
+                render_menu_item(
+                    ui,
+                    MenuId::Help,
+                    "Help",
+                    Box::new(|app, ui| {
+                        if ui.button("About Cosmarium").clicked() {
+                            app.show_about = true;
+                            app.ui_state.active_menu = None;
+                            app.ui_state.menu_expanded = false;
+                        }
+                        if ui.button("Documentation").clicked() {
+                            app.ui_state.active_menu = None;
+                            app.ui_state.menu_expanded = false;
+                        }
+                        if ui.button("Report Issue").clicked() {
+                            app.ui_state.active_menu = None;
+                            app.ui_state.menu_expanded = false;
+                        }
+                    }),
+                );
             });
         });
-        
+
         // Detect click outside menu to close
         if self.ui_state.active_menu.is_some() {
             ctx.input(|i| {
@@ -925,7 +1058,6 @@ impl Cosmarium {
         }
     }
 
-
     /// Render the status bar.
     fn render_status_bar(&mut self, ctx: &egui::Context) {
         if !self.ui_state.show_status_bar {
@@ -936,7 +1068,10 @@ impl Cosmarium {
             ui.horizontal(|ui| {
                 // Project info
                 if let Some(ref project) = self.current_project {
-                    ui.label(format!("📁 {}", project.file_stem().unwrap_or_default().to_string_lossy()));
+                    ui.label(format!(
+                        "📁 {}",
+                        project.file_stem().unwrap_or_default().to_string_lossy()
+                    ));
                     ui.separator();
                 } else {
                     ui.label("📝 No project");
@@ -944,22 +1079,34 @@ impl Cosmarium {
                 }
 
                 // Editor stats (if available from shared state)
-                if let Some(word_count) = self.plugin_context.get_shared_state::<usize>("editor_word_count") {
+                if let Some(word_count) = self
+                    .plugin_context
+                    .get_shared_state::<usize>("editor_word_count")
+                {
                     ui.label(format!("Words: {}", word_count));
                     ui.separator();
                 }
-                if let Some(char_count) = self.plugin_context.get_shared_state::<usize>("editor_char_count") {
+                if let Some(char_count) = self
+                    .plugin_context
+                    .get_shared_state::<usize>("editor_char_count")
+                {
                     ui.label(format!("Characters: {}", char_count));
                     ui.separator();
                 }
-                if let Some(para_count) = self.plugin_context.get_shared_state::<usize>("editor_para_count") {
+                if let Some(para_count) = self
+                    .plugin_context
+                    .get_shared_state::<usize>("editor_para_count")
+                {
                     ui.label(format!("Paragraphs: {}", para_count));
                     ui.separator();
                 }
 
                 // Plugin status
-                ui.label(format!("🔌 {} plugins", self.panel_plugins.len()));
-                
+                ui.label(format!(
+                    "🔌 {} plugins",
+                    self.panel_plugins.len() + self.plugins.len()
+                ));
+
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     // Application info
                     ui.label(format!("Cosmarium v{}", env!("CARGO_PKG_VERSION")));
@@ -974,7 +1121,7 @@ impl Cosmarium {
         if self.has_panels_in_position(cosmarium_plugin_api::PanelPosition::Left) {
             let mut frame = egui::Frame::side_top_panel(&ctx.style());
             frame.inner_margin.bottom = 0;
-            
+
             egui::SidePanel::left("left_panel")
                 .width_range(200.0..=400.0)
                 .default_width(self.ui_state.left_panel_width)
@@ -1016,7 +1163,7 @@ impl Cosmarium {
             if plugin.default_position() != position {
                 return false;
             }
-            
+
             // For Left panel (Zed-style), we always show the container if plugins exist,
             // so the tab bar is visible.
             if position == cosmarium_plugin_api::PanelPosition::Left {
@@ -1028,8 +1175,14 @@ impl Cosmarium {
     }
 
     /// Render all panels in the specified position.
-    fn render_panels_in_position(&mut self, ui: &mut egui::Ui, position: cosmarium_plugin_api::PanelPosition) {
-        let panels_to_render: Vec<String> = self.panel_plugins.iter()
+    fn render_panels_in_position(
+        &mut self,
+        ui: &mut egui::Ui,
+        position: cosmarium_plugin_api::PanelPosition,
+    ) {
+        let panels_to_render: Vec<String> = self
+            .panel_plugins
+            .iter()
             .filter_map(|(name, plugin)| {
                 if plugin.default_position() != position {
                     return None;
@@ -1058,11 +1211,14 @@ impl Cosmarium {
 
         // Special handling for Left panel (Zed-style tabs)
         if position == cosmarium_plugin_api::PanelPosition::Left {
-            if panels_to_render.is_empty() { return; }
+            if panels_to_render.is_empty() {
+                return;
+            }
 
             // Ensure we have an active panel
-            if self.ui_state.active_left_panel.is_none() || 
-               !panels_to_render.contains(self.ui_state.active_left_panel.as_ref().unwrap()) {
+            if self.ui_state.active_left_panel.is_none()
+                || !panels_to_render.contains(self.ui_state.active_left_panel.as_ref().unwrap())
+            {
                 self.ui_state.active_left_panel = Some(panels_to_render[0].clone());
             }
 
@@ -1071,7 +1227,7 @@ impl Cosmarium {
             ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
                 // Add spacing at the bottom to avoid overlapping the status bar
                 ui.add_space(10.0);
-                
+
                 // Render tab bar at the bottom
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 0.0; // Compact tabs
@@ -1079,18 +1235,24 @@ impl Cosmarium {
                         if let Some(panel) = self.panel_plugins.get(panel_name) {
                             let icon = panel.panel_icon();
                             let is_active = *panel_name == active_panel_name;
-                            
+
                             // Style the tab button
-                            let text = egui::RichText::new(icon)
-                                .size(16.0)
-                                .color(if is_active { ui.visuals().text_color() } else { ui.visuals().weak_text_color() });
-                            
-                            let response = ui.add(egui::Button::new(text).frame(false).min_size(egui::vec2(40.0, 30.0)));
-                            
+                            let text = egui::RichText::new(icon).size(16.0).color(if is_active {
+                                ui.visuals().text_color()
+                            } else {
+                                ui.visuals().weak_text_color()
+                            });
+
+                            let response = ui.add(
+                                egui::Button::new(text)
+                                    .frame(false)
+                                    .min_size(egui::vec2(40.0, 30.0)),
+                            );
+
                             if response.clicked() {
                                 self.ui_state.active_left_panel = Some(panel_name.clone());
                             }
-                            
+
                             // Tooltip with title
                             if response.hovered() {
                                 response.on_hover_text(panel.panel_title());
@@ -1133,9 +1295,6 @@ impl Cosmarium {
                 }
             }
         }
-
-
-
     }
 
     /// Render modal dialogs.
@@ -1170,23 +1329,27 @@ impl Cosmarium {
                 .show(ctx, |ui| {
                     ui.label("Installed Plugins:");
                     ui.separator();
-                    
+
                     for (name, plugin) in &self.panel_plugins {
                         ui.horizontal(|ui| {
                             ui.label("🔌");
                             ui.label(name);
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                let is_open = self.ui_state.open_panels.get(name).unwrap_or(&false);
-                                if *is_open {
-                                    ui.colored_label(egui::Color32::GREEN, "Active");
-                                } else {
-                                    ui.colored_label(egui::Color32::GRAY, "Inactive");
-                                }
-                            });
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    let is_open =
+                                        self.ui_state.open_panels.get(name).unwrap_or(&false);
+                                    if *is_open {
+                                        ui.colored_label(egui::Color32::GREEN, "Active");
+                                    } else {
+                                        ui.colored_label(egui::Color32::GRAY, "Inactive");
+                                    }
+                                },
+                            );
                         });
                         ui.separator();
                     }
-                    
+
                     ui.horizontal(|ui| {
                         if ui.button("Close").clicked() {
                             self.show_plugin_manager = false;
@@ -1203,19 +1366,27 @@ impl Cosmarium {
                 .show(ctx, |ui| {
                     ui.label("Application Settings");
                     ui.separator();
-                    
+
                     ui.horizontal(|ui| {
                         ui.label("Theme:");
                         egui::ComboBox::from_label("")
                             .selected_text(&self.ui_state.current_theme)
                             .show_ui(ui, |ui| {
-                                ui.selectable_value(&mut self.ui_state.current_theme, "Dark".to_string(), "Dark");
-                                ui.selectable_value(&mut self.ui_state.current_theme, "Light".to_string(), "Light");
+                                ui.selectable_value(
+                                    &mut self.ui_state.current_theme,
+                                    "Dark".to_string(),
+                                    "Dark",
+                                );
+                                ui.selectable_value(
+                                    &mut self.ui_state.current_theme,
+                                    "Light".to_string(),
+                                    "Light",
+                                );
                             });
                     });
-                    
+
                     ui.separator();
-                    
+
                     ui.horizontal(|ui| {
                         if ui.button("Save").clicked() {
                             // TODO: Save settings
@@ -1236,12 +1407,12 @@ impl Cosmarium {
                 .show(ctx, |ui| {
                     ui.label("Create a new Cosmarium project");
                     ui.separator();
-                    
+
                     ui.horizontal(|ui| {
                         ui.label("Project Name:");
                         ui.text_edit_singleline(&mut self.new_project_name);
                     });
-                    
+
                     ui.horizontal(|ui| {
                         ui.label("Location:");
                         ui.text_edit_singleline(&mut self.new_project_path);
@@ -1254,21 +1425,37 @@ impl Cosmarium {
                             }
                         }
                     });
-                    
+
                     ui.horizontal(|ui| {
                         ui.label("Template:");
                         egui::ComboBox::from_label("")
                             .selected_text(&self.new_project_template)
                             .show_ui(ui, |ui| {
-                                ui.selectable_value(&mut self.new_project_template, "novel".to_string(), "Novel");
-                                ui.selectable_value(&mut self.new_project_template, "short-story".to_string(), "Short Story");
-                                ui.selectable_value(&mut self.new_project_template, "screenplay".to_string(), "Screenplay");
-                                ui.selectable_value(&mut self.new_project_template, "blog".to_string(), "Blog");
+                                ui.selectable_value(
+                                    &mut self.new_project_template,
+                                    "novel".to_string(),
+                                    "Novel",
+                                );
+                                ui.selectable_value(
+                                    &mut self.new_project_template,
+                                    "short-story".to_string(),
+                                    "Short Story",
+                                );
+                                ui.selectable_value(
+                                    &mut self.new_project_template,
+                                    "screenplay".to_string(),
+                                    "Screenplay",
+                                );
+                                ui.selectable_value(
+                                    &mut self.new_project_template,
+                                    "blog".to_string(),
+                                    "Blog",
+                                );
                             });
                     });
-                    
+
                     ui.separator();
-                    
+
                     ui.horizontal(|ui| {
                         if ui.button("Create").clicked() {
                             if !self.new_project_name.is_empty() {
@@ -1309,13 +1496,16 @@ impl eframe::App for Cosmarium {
                 tracing::error!("Plugin update error: {}", e);
             }
         }
-        
+
         // Update panel plugins
         for plugin in self.panel_plugins.values_mut() {
             if let Err(e) = plugin.update(&mut self.plugin_context) {
                 tracing::error!("Panel plugin update error: {}", e);
             }
         }
+
+        // Update atmosphere
+        self.update_atmosphere(ctx);
 
         // Keyboard shortcuts (Ctrl+N, Ctrl+O, Ctrl+S, Ctrl+Q)
         // Keyboard shortcuts (Ctrl+N, Ctrl+O, Ctrl+S, Ctrl+Q)
@@ -1347,14 +1537,17 @@ impl eframe::App for Cosmarium {
                     // Undo
                     if input.modifiers.shift {
                         // Redo (Ctrl+Shift+Z)
-                        self.plugin_context.set_shared_state("markdown_editor_action", "redo".to_string());
+                        self.plugin_context
+                            .set_shared_state("markdown_editor_action", "redo".to_string());
                     } else {
                         // Undo (Ctrl+Z)
-                        self.plugin_context.set_shared_state("markdown_editor_action", "undo".to_string());
+                        self.plugin_context
+                            .set_shared_state("markdown_editor_action", "undo".to_string());
                     }
                 } else if input.key_pressed(egui::Key::Y) {
                     // Redo (Ctrl+Y)
-                    self.plugin_context.set_shared_state("markdown_editor_action", "redo".to_string());
+                    self.plugin_context
+                        .set_shared_state("markdown_editor_action", "redo".to_string());
                 }
             }
         });
@@ -1363,12 +1556,11 @@ impl eframe::App for Cosmarium {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
 
-
         // Render UI
         if self.ui_state.show_menu_bar {
             self.render_menu_bar(ctx, frame);
         }
-        
+
         self.render_status_bar(ctx);
         self.render_panels(ctx);
         self.render_dialogs(ctx);
@@ -1377,7 +1569,7 @@ impl eframe::App for Cosmarium {
 
     fn save(&mut self, _storage: &mut dyn eframe::Storage) {
         tracing::info!("Saving application state");
-        
+
         // TODO: Save application state and configuration
         if let Err(e) = self.config.save() {
             tracing::error!("Failed to save configuration: {}", e);
@@ -1386,11 +1578,11 @@ impl eframe::App for Cosmarium {
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         tracing::info!("Application shutting down");
-        
+
         // Emit shutdown event
         let event = Event::new(EventType::ApplicationShutdown, "Application shutting down");
         self.plugin_context.emit_event(event);
-        
+
         // Shutdown plugins
         for plugin in self.plugins.values_mut() {
             if let Err(e) = tokio::runtime::Runtime::new()
@@ -1412,14 +1604,14 @@ impl Cosmarium {
 
         // Sync content first to ensure we have latest state
         self.sync_editor_content();
-        
+
         // Check for unsaved changes
         if self.check_unsaved_changes() {
             self.show_close_confirmation = true;
             // Prevent closing, show dialog instead
             return false;
         }
-        
+
         // No unsaved changes, allow closing
         true
     }
@@ -1460,6 +1652,151 @@ impl Cosmarium {
                 });
         }
     }
+
+    /// Update the atmosphere (theme) based on sentiment.
+    fn update_atmosphere(&mut self, ctx: &egui::Context) {
+        if let Some(target_sentiment) = self
+            .plugin_context
+            .get_shared_state::<f32>("atmosphere_sentiment")
+        {
+            // Smooth transition
+            // We want to move current_sentiment towards target_sentiment
+            // Speed: 2.0 means it takes ~0.5s to close the gap significantly (exponential decay)
+            let dt = ctx.input(|i| i.stable_dt).min(0.1); // Cap dt to avoid jumps
+            let speed = 4.0; // Higher = faster. 4.0 is snappy but smooth.
+
+            let diff = target_sentiment - self.current_sentiment;
+            if diff.abs() > 0.001 {
+                self.current_sentiment += diff * speed * dt;
+                // Request repaint to animate
+                ctx.request_repaint();
+            } else {
+                self.current_sentiment = target_sentiment;
+            }
+
+            let sentiment = self.current_sentiment;
+
+            // HSL-based theme generation
+            // Sentiment maps to Hue and Saturation/Lightness adjustments
+
+            let (hue, saturation, lightness_bg, lightness_fg) = if sentiment > 0.0 {
+                // Positive: Gold/Warm (Hue ~45)
+                // High lightness for background (Light theme)
+                (45.0, 0.6 * sentiment.abs(), 0.95, 0.1)
+            } else {
+                // Negative: Blue/Cool (Hue ~220)
+                // Low lightness for background (Dark theme)
+                (220.0, 0.5 * sentiment.abs(), 0.05, 0.9)
+            };
+
+            // Helper to convert HSL to Color32
+            fn hsl_to_color(h: f32, s: f32, l: f32) -> egui::Color32 {
+                let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+                let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
+                let m = l - c / 2.0;
+
+                let (r, g, b) = if h < 60.0 {
+                    (c, x, 0.0)
+                } else if h < 120.0 {
+                    (x, c, 0.0)
+                } else if h < 180.0 {
+                    (0.0, c, x)
+                } else if h < 240.0 {
+                    (0.0, x, c)
+                } else if h < 300.0 {
+                    (x, 0.0, c)
+                } else {
+                    (c, 0.0, x)
+                };
+
+                egui::Color32::from_rgb(
+                    ((r + m) * 255.0) as u8,
+                    ((g + m) * 255.0) as u8,
+                    ((b + m) * 255.0) as u8,
+                )
+            }
+
+            // Interpolate between neutral (gray) and target sentiment color
+            // Neutral base: Dark Gray (L=0.1) or Light Gray (L=0.9) depending on sentiment direction?
+            // Actually, let's just lerp the HSL parameters or the resulting colors.
+            // For simplicity and "fulgurance", we'll just use the calculated HSL directly but modulated by sentiment intensity.
+
+            // Base neutral (Dark Mode default)
+            let base_bg = egui::Color32::from_rgb(27, 27, 27);
+
+            // Target colors
+            let target_bg = hsl_to_color(hue, saturation, lightness_bg);
+
+            // Interpolate background
+            // Apply easing to make it more responsive (root curve)
+            // This ensures that even moderate sentiment scores result in a strong visual shift.
+            let raw_factor = sentiment.abs().clamp(0.0, 1.0);
+            let factor = raw_factor.powf(0.5); // Sqrt makes 0.25 -> 0.5, 0.5 -> 0.7, etc.
+
+            let new_bg = lerp_color(base_bg, target_bg, factor);
+
+            // Faint background (for panels/windows)
+            let new_faint = lerp_color(
+                egui::Color32::from_additive_luminance(10),
+                hsl_to_color(
+                    hue,
+                    saturation * 0.5,
+                    lightness_bg * 0.9 + (if lightness_bg > 0.5 { -0.1 } else { 0.1 }),
+                ),
+                factor,
+            );
+
+            // Dynamic Contrast Calculation
+            // Instead of lerping text color (which leads to gray-on-gray),
+            // we calculate high-contrast text based on the resulting background.
+            let bg_lum =
+                0.299 * new_bg.r() as f32 + 0.587 * new_bg.g() as f32 + 0.114 * new_bg.b() as f32;
+
+            // Use a threshold with hysteresis or just a hard cut for maximum readability
+            let new_fg = if bg_lum > 140.0 {
+                // Bright background -> Dark text (Deep Gray/Black)
+                egui::Color32::from_rgb(10, 10, 15)
+            } else {
+                // Dark background -> Light text (White/Light Gray)
+                egui::Color32::from_rgb(240, 240, 245)
+            };
+
+            let mut visuals = if bg_lum > 140.0 {
+                egui::Visuals::light()
+            } else {
+                egui::Visuals::dark()
+            };
+
+            visuals.panel_fill = new_bg;
+            visuals.window_fill = new_bg;
+            visuals.faint_bg_color = new_faint;
+
+            // CRITICAL: Override extreme background for TextEdit to ensure it matches
+            visuals.extreme_bg_color = new_bg;
+
+            // Text colors
+            visuals.widgets.noninteractive.fg_stroke.color = new_fg;
+            visuals.widgets.inactive.fg_stroke.color = new_fg;
+            visuals.widgets.hovered.fg_stroke.color = new_fg;
+            visuals.widgets.active.fg_stroke.color = new_fg;
+            visuals.widgets.open.fg_stroke.color = new_fg;
+
+            // Selection
+            visuals.selection.bg_fill = hsl_to_color(hue, 0.8, 0.5);
+            visuals.selection.stroke.color = new_fg;
+
+            // Apply to context
+            ctx.set_visuals(visuals);
+        }
+    }
+}
+
+fn lerp_color(a: egui::Color32, b: egui::Color32, t: f32) -> egui::Color32 {
+    let t = t.clamp(0.0, 1.0);
+    let r = (a.r() as f32 * (1.0 - t) + b.r() as f32 * t) as u8;
+    let g = (a.g() as f32 * (1.0 - t) + b.g() as f32 * t) as u8;
+    let b_val = (a.b() as f32 * (1.0 - t) + b.b() as f32 * t) as u8;
+    egui::Color32::from_rgb(r, g, b_val)
 }
 
 #[cfg(test)]

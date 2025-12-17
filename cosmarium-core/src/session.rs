@@ -58,7 +58,7 @@ impl Session {
     /// Save session data to the default location.
     pub fn save(&self) -> Result<()> {
         let path = Self::session_file_path()?;
-        
+
         // Ensure directory exists
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
@@ -81,13 +81,13 @@ impl Session {
     pub fn add_recent_project(&mut self, path: PathBuf, max_count: usize) {
         // Remove existing entry if present
         self.recent_projects.retain(|p| p != &path);
-        
+
         // Add to front
         self.recent_projects.insert(0, path.clone());
-        
+
         // Update last opened
         self.last_opened_project = Some(path);
-        
+
         // Trim list
         if self.recent_projects.len() > max_count {
             self.recent_projects.truncate(max_count);
@@ -99,7 +99,7 @@ impl Session {
         let data_dir = dirs::data_dir()
             .ok_or_else(|| Error::config("Could not determine data directory"))?
             .join("cosmarium");
-        
+
         Ok(data_dir.join("session.json"))
     }
 }

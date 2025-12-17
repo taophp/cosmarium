@@ -11,7 +11,7 @@ use std::collections::HashMap;
 #[cfg(feature = "syntax-highlighting")]
 use syntect::highlighting::{Color, FontStyle, Style, Theme, ThemeSet};
 #[cfg(feature = "syntax-highlighting")]
-use syntect::parsing::{SyntaxSet, SyntaxReference};
+use syntect::parsing::{SyntaxReference, SyntaxSet};
 
 /// Markdown syntax highlighter.
 ///
@@ -98,7 +98,7 @@ impl MarkdownHighlighter {
         {
             let syntax_set = SyntaxSet::load_defaults_newlines();
             let theme_set = ThemeSet::load_defaults();
-            
+
             Ok(Self {
                 syntax_set,
                 theme_set,
@@ -107,7 +107,7 @@ impl MarkdownHighlighter {
                 enabled: true,
             })
         }
-        
+
         #[cfg(not(feature = "syntax-highlighting"))]
         {
             Ok(Self {
@@ -149,7 +149,7 @@ impl MarkdownHighlighter {
         {
             self.highlight_with_syntect(content)
         }
-        
+
         #[cfg(not(feature = "syntax-highlighting"))]
         {
             self.highlight_simple(content)
@@ -177,7 +177,7 @@ impl MarkdownHighlighter {
                 self.current_theme = theme_name.to_string();
             }
         }
-        
+
         #[cfg(not(feature = "syntax-highlighting"))]
         {
             // Store theme name even without syntect for consistency
@@ -191,7 +191,7 @@ impl MarkdownHighlighter {
         {
             &self.current_theme
         }
-        
+
         #[cfg(not(feature = "syntax-highlighting"))]
         {
             "default"
@@ -208,7 +208,7 @@ impl MarkdownHighlighter {
         {
             self.theme_set.themes.keys().cloned().collect()
         }
-        
+
         #[cfg(not(feature = "syntax-highlighting"))]
         {
             vec!["default".to_string()]
@@ -251,89 +251,153 @@ impl MarkdownHighlighter {
     /// Get default markdown highlighting rules.
     fn default_markdown_rules() -> HashMap<String, HighlightStyle> {
         let mut rules = HashMap::new();
-        
+
         // Headers
-        rules.insert("heading1".to_string(), HighlightStyle {
-            foreground: "#FF6B6B".to_string(),
-            background: None,
-            font_style: FontStyleFlags { bold: true, italic: false, underline: false },
-        });
-        
-        rules.insert("heading2".to_string(), HighlightStyle {
-            foreground: "#4ECDC4".to_string(),
-            background: None,
-            font_style: FontStyleFlags { bold: true, italic: false, underline: false },
-        });
-        
-        rules.insert("heading3".to_string(), HighlightStyle {
-            foreground: "#45B7D1".to_string(),
-            background: None,
-            font_style: FontStyleFlags { bold: true, italic: false, underline: false },
-        });
-        
+        rules.insert(
+            "heading1".to_string(),
+            HighlightStyle {
+                foreground: "#FF6B6B".to_string(),
+                background: None,
+                font_style: FontStyleFlags {
+                    bold: true,
+                    italic: false,
+                    underline: false,
+                },
+            },
+        );
+
+        rules.insert(
+            "heading2".to_string(),
+            HighlightStyle {
+                foreground: "#4ECDC4".to_string(),
+                background: None,
+                font_style: FontStyleFlags {
+                    bold: true,
+                    italic: false,
+                    underline: false,
+                },
+            },
+        );
+
+        rules.insert(
+            "heading3".to_string(),
+            HighlightStyle {
+                foreground: "#45B7D1".to_string(),
+                background: None,
+                font_style: FontStyleFlags {
+                    bold: true,
+                    italic: false,
+                    underline: false,
+                },
+            },
+        );
+
         // Text formatting
-        rules.insert("bold".to_string(), HighlightStyle {
-            foreground: "#F7931E".to_string(),
-            background: None,
-            font_style: FontStyleFlags { bold: true, italic: false, underline: false },
-        });
-        
-        rules.insert("italic".to_string(), HighlightStyle {
-            foreground: "#FFD93D".to_string(),
-            background: None,
-            font_style: FontStyleFlags { bold: false, italic: true, underline: false },
-        });
-        
-        rules.insert("code".to_string(), HighlightStyle {
-            foreground: "#6BCF7F".to_string(),
-            background: Some("#2D3748".to_string()),
-            font_style: FontStyleFlags { bold: false, italic: false, underline: false },
-        });
-        
+        rules.insert(
+            "bold".to_string(),
+            HighlightStyle {
+                foreground: "#F7931E".to_string(),
+                background: None,
+                font_style: FontStyleFlags {
+                    bold: true,
+                    italic: false,
+                    underline: false,
+                },
+            },
+        );
+
+        rules.insert(
+            "italic".to_string(),
+            HighlightStyle {
+                foreground: "#FFD93D".to_string(),
+                background: None,
+                font_style: FontStyleFlags {
+                    bold: false,
+                    italic: true,
+                    underline: false,
+                },
+            },
+        );
+
+        rules.insert(
+            "code".to_string(),
+            HighlightStyle {
+                foreground: "#6BCF7F".to_string(),
+                background: Some("#2D3748".to_string()),
+                font_style: FontStyleFlags {
+                    bold: false,
+                    italic: false,
+                    underline: false,
+                },
+            },
+        );
+
         // Links
-        rules.insert("link".to_string(), HighlightStyle {
-            foreground: "#4299E1".to_string(),
-            background: None,
-            font_style: FontStyleFlags { bold: false, italic: false, underline: true },
-        });
-        
+        rules.insert(
+            "link".to_string(),
+            HighlightStyle {
+                foreground: "#4299E1".to_string(),
+                background: None,
+                font_style: FontStyleFlags {
+                    bold: false,
+                    italic: false,
+                    underline: true,
+                },
+            },
+        );
+
         // Lists
-        rules.insert("list_marker".to_string(), HighlightStyle {
-            foreground: "#805AD5".to_string(),
-            background: None,
-            font_style: FontStyleFlags { bold: true, italic: false, underline: false },
-        });
-        
+        rules.insert(
+            "list_marker".to_string(),
+            HighlightStyle {
+                foreground: "#805AD5".to_string(),
+                background: None,
+                font_style: FontStyleFlags {
+                    bold: true,
+                    italic: false,
+                    underline: false,
+                },
+            },
+        );
+
         // Blockquotes
-        rules.insert("blockquote".to_string(), HighlightStyle {
-            foreground: "#A0AEC0".to_string(),
-            background: None,
-            font_style: FontStyleFlags { bold: false, italic: true, underline: false },
-        });
-        
+        rules.insert(
+            "blockquote".to_string(),
+            HighlightStyle {
+                foreground: "#A0AEC0".to_string(),
+                background: None,
+                font_style: FontStyleFlags {
+                    bold: false,
+                    italic: true,
+                    underline: false,
+                },
+            },
+        );
+
         rules
     }
 
     /// Highlight using syntect library (when available).
     #[cfg(feature = "syntax-highlighting")]
     fn highlight_with_syntect(&self, content: &str) -> Vec<HighlightedSegment> {
-        let syntax = self.syntax_set
+        let syntax = self
+            .syntax_set
             .find_syntax_by_extension("md")
             .unwrap_or_else(|| self.syntax_set.find_syntax_plain_text());
-        
+
         let theme = &self.theme_set.themes[&self.current_theme];
-        
+
         use syntect::highlighting::Highlighter;
         use syntect::parsing::ParseState;
-        
+
         let mut highlighter = Highlighter::new(theme);
         let mut parse_state = ParseState::new(syntax);
         let mut segments = Vec::new();
-        
+
         for line in content.lines() {
             let ops = parse_state.parse_line(line, &self.syntax_set).unwrap();
             let highlighted = highlighter.highlight_line(line, &ops).unwrap();
-            
+
             for (style, text) in highlighted {
                 if !text.is_empty() {
                     segments.push(HighlightedSegment {
@@ -343,7 +407,7 @@ impl MarkdownHighlighter {
                     });
                 }
             }
-            
+
             // Add newline
             segments.push(HighlightedSegment {
                 text: "\n".to_string(),
@@ -351,7 +415,7 @@ impl MarkdownHighlighter {
                 syntax_type: "newline".to_string(),
             });
         }
-        
+
         segments
     }
 
@@ -359,7 +423,7 @@ impl MarkdownHighlighter {
     fn highlight_simple(&self, content: &str) -> Vec<HighlightedSegment> {
         let mut segments = Vec::new();
         let _current_pos = 0;
-        
+
         // Simple patterns for common markdown elements
         let _patterns = [
             (r"^#{1,6}\s.*$", "heading"),
@@ -370,11 +434,11 @@ impl MarkdownHighlighter {
             (r"^>\s.*$", "blockquote"),
             (r"^[-*+]\s", "list_marker"),
         ];
-        
+
         // For this simple implementation, we'll just return the content as-is
         // with basic classification
         let lines: Vec<&str> = content.lines().collect();
-        
+
         for line in lines {
             let syntax_type = if line.starts_with('#') {
                 "heading"
@@ -385,18 +449,20 @@ impl MarkdownHighlighter {
             } else {
                 "plain"
             };
-            
-            let style = self.custom_rules.get(syntax_type)
+
+            let style = self
+                .custom_rules
+                .get(syntax_type)
                 .cloned()
                 .unwrap_or_default();
-            
+
             segments.push(HighlightedSegment {
                 text: format!("{}\n", line),
                 style,
                 syntax_type: syntax_type.to_string(),
             });
         }
-        
+
         segments
     }
 }
@@ -425,13 +491,13 @@ impl HighlightStyle {
             font_style: FontStyleFlags::default(),
         }
     }
-    
+
     /// Set background color.
     pub fn with_background(mut self, background: &str) -> Self {
         self.background = Some(background.to_string());
         self
     }
-    
+
     /// Set font style.
     pub fn with_font_style(mut self, font_style: FontStyleFlags) -> Self {
         self.font_style = font_style;
@@ -442,14 +508,14 @@ impl HighlightStyle {
     #[cfg(feature = "syntax-highlighting")]
     pub fn from_syntect_style(style: Style) -> Self {
         Self {
-            foreground: format!("#{:02X}{:02X}{:02X}", 
-                               style.foreground.r, 
-                               style.foreground.g, 
-                               style.foreground.b),
-            background: Some(format!("#{:02X}{:02X}{:02X}", 
-                                   style.background.r, 
-                                   style.background.g, 
-                                   style.background.b)),
+            foreground: format!(
+                "#{:02X}{:02X}{:02X}",
+                style.foreground.r, style.foreground.g, style.foreground.b
+            ),
+            background: Some(format!(
+                "#{:02X}{:02X}{:02X}",
+                style.background.r, style.background.g, style.background.b
+            )),
             font_style: FontStyleFlags {
                 bold: style.font_style.contains(FontStyle::BOLD),
                 italic: style.font_style.contains(FontStyle::ITALIC),
@@ -501,7 +567,7 @@ mod tests {
         let mut highlighter = MarkdownHighlighter::new().unwrap();
         let themes = highlighter.available_themes();
         assert!(!themes.is_empty());
-        
+
         if !themes.is_empty() {
             highlighter.set_theme(&themes[0]);
         }
@@ -514,10 +580,10 @@ mod tests {
         assert!(highlighter.is_enabled());
         #[cfg(not(feature = "syntax-highlighting"))]
         assert!(!highlighter.is_enabled());
-        
+
         highlighter.set_enabled(false);
         assert!(!highlighter.is_enabled());
-        
+
         let segments = highlighter.highlight("# Test");
         assert_eq!(segments.len(), 1);
         assert_eq!(segments[0].syntax_type, "plain");
@@ -526,11 +592,14 @@ mod tests {
     #[test]
     fn test_custom_rules() {
         let mut highlighter = MarkdownHighlighter::new().unwrap();
-        let custom_style = HighlightStyle::new("#FF0000")
-            .with_font_style(FontStyleFlags { bold: true, italic: false, underline: false });
-        
+        let custom_style = HighlightStyle::new("#FF0000").with_font_style(FontStyleFlags {
+            bold: true,
+            italic: false,
+            underline: false,
+        });
+
         highlighter.add_custom_rule("custom", custom_style.clone());
-        
+
         // Test rule was added (we can't easily test the highlighting without more complex setup)
         highlighter.remove_custom_rule("custom");
     }
@@ -539,8 +608,12 @@ mod tests {
     fn test_highlight_style_creation() {
         let style = HighlightStyle::new("#FF0000")
             .with_background("#00FF00")
-            .with_font_style(FontStyleFlags { bold: true, italic: true, underline: false });
-        
+            .with_font_style(FontStyleFlags {
+                bold: true,
+                italic: true,
+                underline: false,
+            });
+
         assert_eq!(style.foreground, "#FF0000");
         assert_eq!(style.background, Some("#00FF00".to_string()));
         assert!(style.font_style.bold);
@@ -555,7 +628,7 @@ mod tests {
             italic: false,
             underline: true,
         };
-        
+
         assert!(flags.bold);
         assert!(!flags.italic);
         assert!(flags.underline);

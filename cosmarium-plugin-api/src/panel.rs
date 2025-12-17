@@ -649,12 +649,7 @@ mod tests {
 
     #[test]
     fn test_panel_visibility() {
-        let mut panel = Panel::new(
-            Uuid::new_v4(),
-            "Test",
-            PanelPosition::Left,
-            PanelSize::Auto,
-        );
+        let mut panel = Panel::new(Uuid::new_v4(), "Test", PanelPosition::Left, PanelSize::Auto);
 
         assert!(!panel.visible);
         panel.set_visible(true);
@@ -676,21 +671,33 @@ mod tests {
     #[test]
     fn test_panel_size_constructors() {
         let fixed = PanelSize::fixed(100.0, 200.0);
-        assert_eq!(fixed, PanelSize::Fixed { width: 100.0, height: 200.0 });
+        assert_eq!(
+            fixed,
+            PanelSize::Fixed {
+                width: 100.0,
+                height: 200.0
+            }
+        );
 
         let flexible = PanelSize::flexible(50.0, 75.0);
-        assert_eq!(flexible, PanelSize::Flexible {
-            min_width: 50.0,
-            min_height: 75.0,
-            max_width: None,
-            max_height: None,
-        });
+        assert_eq!(
+            flexible,
+            PanelSize::Flexible {
+                min_width: 50.0,
+                min_height: 75.0,
+                max_width: None,
+                max_height: None,
+            }
+        );
 
         let percentage = PanelSize::percentage(0.5, 0.3);
-        assert_eq!(percentage, PanelSize::Percentage {
-            width_pct: 0.5,
-            height_pct: 0.3,
-        });
+        assert_eq!(
+            percentage,
+            PanelSize::Percentage {
+                width_pct: 0.5,
+                height_pct: 0.3,
+            }
+        );
     }
 
     #[test]
@@ -705,8 +712,8 @@ mod tests {
         assert!(separator.is_separator);
         assert!(!separator.enabled);
 
-        let disabled_item = PanelContextMenuItem::new("disabled", "Disabled Item")
-            .with_enabled(false);
+        let disabled_item =
+            PanelContextMenuItem::new("disabled", "Disabled Item").with_enabled(false);
         assert!(!disabled_item.enabled);
     }
 
@@ -721,7 +728,7 @@ mod tests {
         assert_eq!(panel.default_position(), PanelPosition::Left);
         assert!(panel.is_closable());
         assert!(!panel.default_open());
-        
+
         let context_items = panel.context_menu_items();
         assert_eq!(context_items.len(), 3);
         assert_eq!(context_items[0].id, "clear");

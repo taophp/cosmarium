@@ -7,8 +7,8 @@
 //! The layout system supports dockable panels, floating windows, and
 //! customizable workspace configurations that can be saved and restored.
 
-use crate::{Error, Result, events::EventBus};
-use cosmarium_plugin_api::{Panel, PanelPosition, Event, EventType};
+use crate::{events::EventBus, Error, Result};
+use cosmarium_plugin_api::{Event, EventType, Panel, PanelPosition};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -408,7 +408,8 @@ impl LayoutManager {
         let content = serde_json::to_string_pretty(&layout)
             .map_err(|e| Error::layout(format!("Failed to serialize layout: {}", e)))?;
 
-        tokio::fs::write(&layout_file, content).await
+        tokio::fs::write(&layout_file, content)
+            .await
             .map_err(|e| Error::layout(format!("Failed to write layout file: {}", e)))?;
 
         self.saved_layouts.insert(name.to_string(), layout);
@@ -451,7 +452,8 @@ impl LayoutManager {
             return Err(Error::layout(format!("Layout '{}' not found", name)));
         }
 
-        let content = tokio::fs::read_to_string(&layout_file).await
+        let content = tokio::fs::read_to_string(&layout_file)
+            .await
             .map_err(|e| Error::layout(format!("Failed to read layout file: {}", e)))?;
 
         let layout: Layout = serde_json::from_str(&content)
@@ -526,12 +528,15 @@ impl LayoutManager {
             return Ok(());
         }
 
-        let mut entries = tokio::fs::read_dir(&self.layouts_directory).await
+        let mut entries = tokio::fs::read_dir(&self.layouts_directory)
+            .await
             .map_err(|e| Error::layout(format!("Failed to read layouts directory: {}", e)))?;
 
-        while let Some(entry) = entries.next_entry().await
-            .map_err(|e| Error::layout(format!("Failed to read directory entry: {}", e)))? {
-
+        while let Some(entry) = entries
+            .next_entry()
+            .await
+            .map_err(|e| Error::layout(format!("Failed to read directory entry: {}", e)))?
+        {
             let path = entry.path();
             if path.extension().and_then(|s| s.to_str()) == Some("json") {
                 if let Some(name) = path.file_stem().and_then(|s| s.to_str()) {
@@ -685,7 +690,8 @@ impl Layout {
     where
         T: for<'de> Deserialize<'de>,
     {
-        self.properties.get(key)
+        self.properties
+            .get(key)
             .and_then(|v| serde_json::from_value(v.clone()).ok())
     }
 
@@ -793,10 +799,15 @@ mod tests {
         let mut layout = Layout::new("Test");
 
         layout.set_property("test_number", 42i32).unwrap();
-        layout.set_property("test_string", "hello".to_string()).unwrap();
+        layout
+            .set_property("test_string", "hello".to_string())
+            .unwrap();
 
         assert_eq!(layout.get_property::<i32>("test_number"), Some(42));
-        assert_eq!(layout.get_property::<String>("test_string"), Some("hello".to_string()));
+        assert_eq!(
+            layout.get_property::<String>("test_string"),
+            Some("hello".to_string())
+        );
         assert_eq!(layout.get_property::<i32>("nonexistent"), None);
     }
 
@@ -814,9 +825,24 @@ mod tests {
     fn test_layout_panels_by_position() {
         let mut layout = Layout::new("Test");
 
-        let panel1 = Panel::new(Uuid::new_v4(), "Left Panel", PanelPosition::Left, PanelSize::Auto);
-        let panel2 = Panel::new(Uuid::new_v4(), "Right Panel", PanelPosition::Right, PanelSize::Auto);
-        let panel3 = Panel::new(Uuid::new_v4(), "Another Left", PanelPosition::Left, PanelSize::Auto);
+        let panel1 = Panel::new(
+            Uuid::new_v4(),
+            "Left Panel",
+            PanelPosition::Left,
+            PanelSize::Auto,
+        );
+        let panel2 = Panel::new(
+            Uuid::new_v4(),
+            "Right Panel",
+            PanelPosition::Right,
+            PanelSize::Auto,
+        );
+        let panel3 = Panel::new(
+            Uuid::new_v4(),
+            "Another Left",
+            PanelPosition::Left,
+            PanelSize::Auto,
+        );
 
         layout.add_panel(panel1);
         layout.add_panel(panel2);

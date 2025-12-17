@@ -116,33 +116,33 @@ impl WritingStats {
     /// ```
     pub fn update(&mut self, content: &str) {
         let old_word_count = self.word_count;
-        
+
         // Update basic counts
         self.word_count = Self::count_words(content);
         self.char_count = content.chars().count();
         self.char_count_no_spaces = content.chars().filter(|&c| c != ' ').count();
         self.paragraph_count = Self::count_paragraphs(content);
         self.sentence_count = Self::count_sentences(content);
-        
+
         // Calculate averages
         if self.sentence_count > 0 {
             self.avg_words_per_sentence = self.word_count as f32 / self.sentence_count as f32;
         }
-        
+
         if self.word_count > 0 {
             self.avg_chars_per_word = self.char_count_no_spaces as f32 / self.word_count as f32;
         }
-        
+
         // Calculate reading time (assuming 200 words per minute)
         self.reading_time_minutes = self.word_count as f32 / 200.0;
-        
+
         // Update word frequency
         self.update_word_frequency(content);
-        
+
         // Update session statistics
         let words_added = self.word_count.saturating_sub(old_word_count);
         self.session_stats.add_words(words_added);
-        
+
         self.last_updated = SystemTime::now();
     }
 
@@ -342,10 +342,12 @@ impl WritingStats {
     /// assert_eq!(top_words[0].1, 3);
     /// ```
     pub fn most_frequent_words(&self, limit: usize) -> Vec<(String, usize)> {
-        let mut word_vec: Vec<_> = self.word_frequency.iter()
+        let mut word_vec: Vec<_> = self
+            .word_frequency
+            .iter()
             .map(|(word, count)| (word.clone(), *count))
             .collect();
-        
+
         word_vec.sort_by(|a, b| b.1.cmp(&a.1));
         word_vec.truncate(limit);
         word_vec
@@ -405,7 +407,7 @@ impl WritingStats {
                     .trim_start_matches('+')
                     .trim_start_matches('>')
                     .trim();
-                
+
                 // Skip if it's just markup
                 if cleaned.is_empty() || cleaned.chars().all(|c| "*_~`#-+=|".contains(c)) {
                     0
@@ -421,7 +423,7 @@ impl WritingStats {
         if text.trim().is_empty() {
             return 0;
         }
-        
+
         text.split("\n\n")
             .filter(|paragraph| !paragraph.trim().is_empty())
             .count()
@@ -433,7 +435,7 @@ impl WritingStats {
         let sentence_endings = ['.', '!', '?'];
         let mut count = 0;
         let mut chars = text.chars().peekable();
-        
+
         while let Some(ch) = chars.next() {
             if sentence_endings.contains(&ch) {
                 // Check if it's not an abbreviation or decimal
@@ -446,21 +448,21 @@ impl WritingStats {
                 }
             }
         }
-        
+
         count.max(if text.trim().is_empty() { 0 } else { 1 })
     }
 
     /// Update word frequency based on the text content.
     fn update_word_frequency(&mut self, text: &str) {
         self.word_frequency.clear();
-        
+
         for word in text.split_whitespace() {
             let lowercase_word = word.to_lowercase();
             let cleaned = lowercase_word
                 .trim_matches(|c: char| ".,!?;:()[]{}\"'`*_~".contains(c))
                 .trim_start_matches('#')
                 .trim();
-            
+
             if !cleaned.is_empty() && cleaned.len() > 2 {
                 *self.word_frequency.entry(cleaned.to_string()).or_insert(0) += 1;
             }
@@ -491,14 +493,15 @@ impl SessionStats {
         if word_count > 0 {
             self.session_words += word_count;
             let now = SystemTime::now();
-            
+
             // Update active writing time if activity is recent
             if let Ok(since_last) = now.duration_since(self.last_activity) {
-                if since_last < Duration::from_secs(30) { // 30 second pause threshold
+                if since_last < Duration::from_secs(30) {
+                    // 30 second pause threshold
                     self.active_writing_time += since_last;
                 }
             }
-            
+
             self.last_activity = now;
             self.update_words_per_minute();
         }
@@ -552,7 +555,7 @@ mod tests {
     fn test_basic_counting() {
         let mut stats = WritingStats::new();
         stats.update("Hello world! This is a test.");
-        
+
         assert_eq!(stats.word_count(), 6);
         assert_eq!(stats.char_count(), 28);
         assert_eq!(stats.sentence_count(), 2);
@@ -563,7 +566,7 @@ mod tests {
     fn test_markdown_word_counting() {
         let mut stats = WritingStats::new();
         stats.update("# Title\n\n**Bold text** and *italic text* here.");
-        
+
         // Should count words excluding markdown syntax
         assert_eq!(stats.word_count(), 7); // Title, Bold, text, and, italic, text, here
     }
@@ -572,7 +575,7 @@ mod tests {
     fn test_paragraph_counting() {
         let mut stats = WritingStats::new();
         stats.update("First paragraph.\n\nSecond paragraph.\n\nThird paragraph.");
-        
+
         assert_eq!(stats.paragraph_count(), 3);
     }
 
@@ -580,7 +583,7 @@ mod tests {
     fn test_sentence_counting() {
         let mut stats = WritingStats::new();
         stats.update("First sentence. Second sentence! Third sentence?");
-        
+
         assert_eq!(stats.sentence_count(), 3);
     }
 
@@ -588,7 +591,7 @@ mod tests {
     fn test_word_frequency() {
         let mut stats = WritingStats::new();
         stats.update("the cat sat on the mat the");
-        
+
         let frequency = stats.word_frequency();
         assert_eq!(frequency.get("the"), Some(&3));
         assert_eq!(frequency.get("cat"), Some(&1));
@@ -599,7 +602,7 @@ mod tests {
     fn test_most_frequent_words() {
         let mut stats = WritingStats::new();
         stats.update("the cat sat on the mat the dog");
-        
+
         let top_words = stats.most_frequent_words(3);
         assert_eq!(top_words[0], ("the".to_string(), 3));
         assert_eq!(top_words.len(), 3);
@@ -610,7 +613,7 @@ mod tests {
         let mut stats = WritingStats::new();
         let text = "word ".repeat(200); // 200 words
         stats.update(&text);
-        
+
         // Should be approximately 1 minute for 200 words
         assert!((stats.reading_time_minutes() - 1.0).abs() < 0.1);
     }
@@ -619,7 +622,7 @@ mod tests {
     fn test_averages() {
         let mut stats = WritingStats::new();
         stats.update("Short sentence. This is a much longer sentence with more words.");
-        
+
         assert!(stats.avg_words_per_sentence() > 0.0);
         assert!(stats.avg_chars_per_word() > 0.0);
     }
@@ -628,7 +631,7 @@ mod tests {
     fn test_session_stats() {
         let mut stats = WritingStats::new();
         stats.update("Some initial content");
-        
+
         let session = stats.session_stats();
         assert!(session.session_words() > 0);
         assert!(session.active_writing_time() >= Duration::new(0, 0));
@@ -638,12 +641,12 @@ mod tests {
     fn test_session_reset() {
         let mut stats = WritingStats::new();
         stats.update("Some content");
-        
+
         let original_words = stats.word_count();
         let original_session_words = stats.session_stats().session_words();
-        
+
         stats.reset_session();
-        
+
         // Document stats should remain
         assert_eq!(stats.word_count(), original_words);
         // Session stats should reset
@@ -654,7 +657,7 @@ mod tests {
     fn test_empty_text() {
         let mut stats = WritingStats::new();
         stats.update("");
-        
+
         assert_eq!(stats.word_count(), 0);
         assert_eq!(stats.char_count(), 0);
         assert_eq!(stats.paragraph_count(), 0);
@@ -665,7 +668,7 @@ mod tests {
     fn test_whitespace_only() {
         let mut stats = WritingStats::new();
         stats.update("   \n\n   \t  ");
-        
+
         assert_eq!(stats.word_count(), 0);
         assert_eq!(stats.paragraph_count(), 0);
         assert_eq!(stats.sentence_count(), 0);

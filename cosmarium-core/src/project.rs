@@ -8,7 +8,7 @@
 //! or as directory structures, providing flexibility for different workflows
 //! and collaboration needs.
 
-use crate::{Error, Result, events::EventBus, git::GitIntegration};
+use crate::{events::EventBus, git::GitIntegration, Error, Result};
 use cosmarium_plugin_api::{Event, EventType};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -112,7 +112,7 @@ impl ProjectManager {
 
         info!("Initializing project manager");
         self.event_bus = Some(event_bus);
-        
+
         // Ensure default project directory exists
         if let Err(e) = tokio::fs::create_dir_all(&self.default_project_directory).await {
             warn!("Failed to create default project directory: {}", e);
@@ -227,18 +227,22 @@ impl ProjectManager {
         }
 
         let path = path.as_ref();
-        
+
         // Check if path already exists
         if path.exists() {
-            return Err(Error::project(format!("Project path already exists: {:?}", path)));
+            return Err(Error::project(format!(
+                "Project path already exists: {:?}",
+                path
+            )));
         }
 
         // Create project directory
-        tokio::fs::create_dir_all(path).await
+        tokio::fs::create_dir_all(path)
+            .await
             .map_err(|e| Error::project(format!("Failed to create project directory: {}", e)))?;
 
         let project = Project::new(name, path, template)?;
-        
+
         // Save project to close current one if any
         let need_save = if let Some(current_project) = &self.active_project {
             current_project.has_unsaved_changes()
@@ -262,7 +266,10 @@ impl ProjectManager {
         // Emit project created event
         if let Some(ref event_bus) = self.event_bus {
             let bus = event_bus.write().await;
-            let event = Event::new(EventType::ProjectCreated, format!("Created project: {}", name));
+            let event = Event::new(
+                EventType::ProjectCreated,
+                format!("Created project: {}", name),
+            );
             let _ = bus.emit(event).await;
         }
 
@@ -302,7 +309,10 @@ impl ProjectManager {
         let path = path.as_ref();
 
         if !path.exists() {
-            return Err(Error::project(format!("Project path does not exist: {:?}", path)));
+            return Err(Error::project(format!(
+                "Project path does not exist: {:?}",
+                path
+            )));
         }
 
         // Save current project if any
@@ -331,7 +341,10 @@ impl ProjectManager {
         // Emit project opened event
         if let Some(ref event_bus) = self.event_bus {
             let bus = event_bus.write().await;
-            let event = Event::new(EventType::ProjectOpened, format!("Opened project: {}", project_name));
+            let event = Event::new(
+                EventType::ProjectOpened,
+                format!("Opened project: {}", project_name),
+            );
             let _ = bus.emit(event).await;
         }
 
@@ -362,14 +375,16 @@ impl ProjectManager {
     /// # });
     /// ```
     pub async fn save_project(&mut self) -> Result<()> {
-        let project = self.active_project.as_mut()
+        let project = self
+            .active_project
+            .as_mut()
             .ok_or_else(|| Error::project("No active project"))?;
-        
+
         let name = project.name().to_string();
-        
+
         // Save the project
         project.save().await?;
-        
+
         // Emit project saved event
         if let Some(ref event_bus) = self.event_bus {
             let bus = event_bus.write().await;
@@ -407,7 +422,9 @@ impl ProjectManager {
     /// # });
     /// ```
     pub async fn close_project(&mut self, save_if_modified: bool) -> Result<()> {
-        let project = self.active_project.as_ref()
+        let project = self
+            .active_project
+            .as_ref()
             .ok_or_else(|| Error::project("No active project"))?;
         let project_name = project.name().to_string();
 
@@ -424,7 +441,10 @@ impl ProjectManager {
         // Emit project closed event
         if let Some(ref event_bus) = self.event_bus {
             let bus = event_bus.write().await;
-            let event = Event::new(EventType::ProjectClosed, format!("Closed project: {}", project_name));
+            let event = Event::new(
+                EventType::ProjectClosed,
+                format!("Closed project: {}", project_name),
+            );
             let _ = bus.emit(event).await;
         }
 
@@ -551,10 +571,10 @@ impl ProjectManager {
     fn add_to_recent_projects(&mut self, path: PathBuf) {
         // Remove if already exists
         self.recent_projects.retain(|p| p != &path);
-        
+
         // Add to front
         self.recent_projects.insert(0, path);
-        
+
         // Limit to max size
         if self.recent_projects.len() > self.max_recent_projects {
             self.recent_projects.truncate(self.max_recent_projects);
@@ -571,12 +591,13 @@ impl ProjectManager {
     /// Load the recent projects list from storage.
     async fn load_recent_projects(&mut self) -> Result<()> {
         let recent_file = self.get_recent_projects_file();
-        
+
         if recent_file.exists() {
             match tokio::fs::read_to_string(&recent_file).await {
                 Ok(content) => {
                     if let Ok(projects) = serde_json::from_str::<Vec<PathBuf>>(&content) {
-                        self.recent_projects = projects.into_iter()
+                        self.recent_projects = projects
+                            .into_iter()
                             .filter(|p| p.exists())
                             .take(self.max_recent_projects)
                             .collect();
@@ -595,16 +616,18 @@ impl ProjectManager {
     /// Save the recent projects list to storage.
     async fn save_recent_projects(&self) -> Result<()> {
         let recent_file = self.get_recent_projects_file();
-        
+
         if let Some(parent) = recent_file.parent() {
-            tokio::fs::create_dir_all(parent).await
+            tokio::fs::create_dir_all(parent)
+                .await
                 .map_err(|e| Error::project(format!("Failed to create config directory: {}", e)))?;
         }
 
         let content = serde_json::to_string_pretty(&self.recent_projects)
             .map_err(|e| Error::project(format!("Failed to serialize recent projects: {}", e)))?;
 
-        tokio::fs::write(&recent_file, content).await
+        tokio::fs::write(&recent_file, content)
+            .await
             .map_err(|e| Error::project(format!("Failed to write recent projects: {}", e)))?;
 
         Ok(())
@@ -671,7 +694,7 @@ impl Project {
     pub fn new<P: AsRef<Path>>(name: &str, path: P, template: &str) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
         let metadata = ProjectMetadata::new(name, template);
-        
+
         let state = ProjectState {
             metadata,
             documents: Vec::new(),
@@ -686,7 +709,7 @@ impl Project {
                 None
             }
         };
-        
+
         let project = Self {
             state,
             path,
@@ -710,21 +733,23 @@ impl Project {
         let path = path.as_ref();
         let meta_dir = path.join("meta");
         let core_file = meta_dir.join("core.toon");
-        
+
         // Fallback for legacy project.json
         let legacy_file = path.join("project.json");
 
         let state = if core_file.exists() {
-            let content = tokio::fs::read_to_string(&core_file).await
+            let content = tokio::fs::read_to_string(&core_file)
+                .await
                 .map_err(|e| Error::project(format!("Failed to read core metadata: {}", e)))?;
-            
+
             serde_toon2::from_str(&content)
                 .map_err(|e| Error::project(format!("Failed to parse core metadata: {}", e)))?
         } else if legacy_file.exists() {
             // Legacy load
-            let content = tokio::fs::read_to_string(&legacy_file).await
-                .map_err(|e| Error::project(format!("Failed to read legacy project file: {}", e)))?;
-            
+            let content = tokio::fs::read_to_string(&legacy_file).await.map_err(|e| {
+                Error::project(format!("Failed to read legacy project file: {}", e))
+            })?;
+
             // We need a temporary struct to deserialize legacy JSON which matches old Project structure
             #[derive(Deserialize)]
             struct LegacyProject {
@@ -732,10 +757,11 @@ impl Project {
                 documents: Vec<Uuid>,
                 settings: ProjectSettings,
             }
-            
-            let legacy: LegacyProject = serde_json::from_str(&content)
-                .map_err(|e| Error::project(format!("Failed to parse legacy project file: {}", e)))?;
-                
+
+            let legacy: LegacyProject = serde_json::from_str(&content).map_err(|e| {
+                Error::project(format!("Failed to parse legacy project file: {}", e))
+            })?;
+
             ProjectState {
                 metadata: legacy.metadata,
                 documents: legacy.documents,
@@ -776,15 +802,17 @@ impl Project {
     pub async fn save(&mut self) -> Result<()> {
         let meta_dir = self.path.join("meta");
         let content_dir = self.path.join("content");
-        
+
         // Ensure directories exist
-        tokio::fs::create_dir_all(&meta_dir).await
+        tokio::fs::create_dir_all(&meta_dir)
+            .await
             .map_err(|e| Error::project(format!("Failed to create meta directory: {}", e)))?;
-        tokio::fs::create_dir_all(&content_dir).await
+        tokio::fs::create_dir_all(&content_dir)
+            .await
             .map_err(|e| Error::project(format!("Failed to create content directory: {}", e)))?;
-            
+
         let core_file = meta_dir.join("core.toon");
-        
+
         // Update metadata
         self.state.metadata.last_modified = SystemTime::now();
 
@@ -792,7 +820,8 @@ impl Project {
         let content = serde_toon2::to_string(&self.state)
             .map_err(|e| Error::project(format!("Failed to serialize project state: {}", e)))?;
 
-        tokio::fs::write(&core_file, content).await
+        tokio::fs::write(&core_file, content)
+            .await
             .map_err(|e| Error::project(format!("Failed to write core metadata: {}", e)))?;
 
         // Commit changes if git is available
@@ -858,7 +887,12 @@ impl Project {
 
     /// Remove a document from the project.
     pub fn remove_document(&mut self, document_id: Uuid) {
-        if let Some(pos) = self.state.documents.iter().position(|&id| id == document_id) {
+        if let Some(pos) = self
+            .state
+            .documents
+            .iter()
+            .position(|&id| id == document_id)
+        {
             self.state.documents.remove(pos);
             self.mark_modified();
         }
@@ -909,7 +943,7 @@ impl ProjectMetadata {
     /// Create new project metadata.
     pub fn new(name: &str, template: &str) -> Self {
         let now = SystemTime::now();
-        
+
         Self {
             name: name.to_string(),
             description: String::new(),
@@ -982,7 +1016,7 @@ mod tests {
     async fn test_project_manager_initialization() {
         let event_bus = Arc::new(RwLock::new(EventBus::new()));
         let mut manager = ProjectManager::new();
-        
+
         assert!(manager.initialize(event_bus).await.is_ok());
         assert!(manager.initialized);
     }
@@ -991,9 +1025,9 @@ mod tests {
     async fn test_project_creation() {
         let temp_dir = tempdir().unwrap();
         let project_path = temp_dir.path().join("test_project");
-        
+
         let project = Project::new("Test Project", &project_path, "novel").unwrap();
-        
+
         assert_eq!(project.name(), "Test Project");
         assert_eq!(project.path(), &project_path);
         assert!(project.has_unsaved_changes());
@@ -1005,12 +1039,12 @@ mod tests {
         let temp_dir = make_tempdir();
         let project_path = temp_dir.join("test_project");
         tokio::fs::create_dir_all(&project_path).await.unwrap();
-        
+
         // Create and save project
         let mut project = Project::new("Test Project", &project_path, "novel").unwrap();
         project.save().await.unwrap();
         assert!(!project.has_unsaved_changes());
-        
+
         // Load project
         let loaded_project = Project::load(&project_path).await.unwrap();
         assert_eq!(loaded_project.name(), "Test Project");
@@ -1022,17 +1056,17 @@ mod tests {
     async fn test_project_document_management() {
         let temp_dir = tempdir().unwrap();
         let project_path = temp_dir.path().join("test_project");
-        
+
         let mut project = Project::new("Test Project", &project_path, "novel").unwrap();
         let doc_id = Uuid::new_v4();
-        
+
         assert_eq!(project.documents().len(), 0);
-        
+
         project.add_document(doc_id);
         assert_eq!(project.documents().len(), 1);
         assert!(project.documents().contains(&doc_id));
         assert!(project.has_unsaved_changes());
-        
+
         project.remove_document(doc_id);
         assert_eq!(project.documents().len(), 0);
     }
@@ -1062,21 +1096,30 @@ mod tests {
         let temp_dir = make_tempdir();
         let project_path = temp_dir.join("toon_test_project");
         tokio::fs::create_dir_all(&project_path).await.unwrap();
-        
+
         // Create and save project
         let mut project = Project::new("TOON Test", &project_path, "novel").unwrap();
         project.save().await.unwrap();
-        
+
         // Verify TOON file exists
         let core_toon_path = project_path.join("meta/core.toon");
         assert!(core_toon_path.exists(), "core.toon file should exist");
-        
+
         // Verify TOON content is parseable
         let toon_content = tokio::fs::read_to_string(&core_toon_path).await.unwrap();
-        assert!(toon_content.contains("metadata:"), "TOON should contain metadata section");
-        assert!(toon_content.contains("name: TOON Test"), "TOON should contain project name");
-        assert!(toon_content.contains("template: novel"), "TOON should contain template");
-        
+        assert!(
+            toon_content.contains("metadata:"),
+            "TOON should contain metadata section"
+        );
+        assert!(
+            toon_content.contains("name: TOON Test"),
+            "TOON should contain project name"
+        );
+        assert!(
+            toon_content.contains("template: novel"),
+            "TOON should contain template"
+        );
+
         // Verify it can be deserialized
         let loaded_project = Project::load(&project_path).await.unwrap();
         assert_eq!(loaded_project.name(), "TOON Test");
@@ -1087,17 +1130,29 @@ mod tests {
         let temp_dir = make_tempdir();
         let project_path = temp_dir.join("structure_test");
         tokio::fs::create_dir_all(&project_path).await.unwrap();
-        
+
         let mut project = Project::new("Structure Test", &project_path, "novel").unwrap();
         project.save().await.unwrap();
-        
+
         // Verify required directories exist
-        assert!(project_path.join("meta").is_dir(), "meta/ directory should exist");
-        assert!(project_path.join("content").is_dir(), "content/ directory should exist");
-        assert!(project_path.join(".git").is_dir(), ".git/ directory should exist");
-        
+        assert!(
+            project_path.join("meta").is_dir(),
+            "meta/ directory should exist"
+        );
+        assert!(
+            project_path.join("content").is_dir(),
+            "content/ directory should exist"
+        );
+        assert!(
+            project_path.join(".git").is_dir(),
+            ".git/ directory should exist"
+        );
+
         // Verify core.toon exists
-        assert!(project_path.join("meta/core.toon").exists(), "meta/core.toon should exist");
+        assert!(
+            project_path.join("meta/core.toon").exists(),
+            "meta/core.toon should exist"
+        );
     }
 
     #[tokio::test]
@@ -1105,13 +1160,22 @@ mod tests {
         let temp_dir = make_tempdir();
         let project_path = temp_dir.join("git_test_project");
         tokio::fs::create_dir_all(&project_path).await.unwrap();
-        
+
         let project = Project::new("Git Test", &project_path, "novel").unwrap();
-        
+
         // Verify Git repo was initialized
-        assert!(project.git.is_some(), "Git integration should be initialized");
-        assert!(project_path.join(".git").is_dir(), ".git directory should exist");
-        assert!(project_path.join(".git/config").exists(), ".git/config should exist");
+        assert!(
+            project.git.is_some(),
+            "Git integration should be initialized"
+        );
+        assert!(
+            project_path.join(".git").is_dir(),
+            ".git directory should exist"
+        );
+        assert!(
+            project_path.join(".git/config").exists(),
+            ".git/config should exist"
+        );
     }
 
     #[tokio::test]
@@ -1119,7 +1183,7 @@ mod tests {
         let temp_dir = make_tempdir();
         let project_path = temp_dir.join("legacy_test");
         tokio::fs::create_dir_all(&project_path).await.unwrap();
-        
+
         // Create legacy project.json
         let legacy_metadata = serde_json::json!({
             "name": "Legacy Project",
@@ -1132,7 +1196,7 @@ mod tests {
             "tags": ["test"],
             "properties": {}
         });
-        
+
         let legacy_json = serde_json::json!({
             "metadata": legacy_metadata,
             "documents": [],
@@ -1144,12 +1208,15 @@ mod tests {
                 "custom": {}
             }
         });
-        
+
         let legacy_path = project_path.join("project.json");
-        tokio::fs::write(&legacy_path, serde_json::to_string_pretty(&legacy_json).unwrap())
-            .await
-            .unwrap();
-        
+        tokio::fs::write(
+            &legacy_path,
+            serde_json::to_string_pretty(&legacy_json).unwrap(),
+        )
+        .await
+        .unwrap();
+
         // Load legacy project (should migrate automatically)
         let loaded_project = Project::load(&project_path).await.unwrap();
         assert_eq!(loaded_project.name(), "Legacy Project");
@@ -1162,24 +1229,24 @@ mod tests {
         let temp_dir = make_tempdir();
         let project_path = temp_dir.join("preservation_test");
         tokio::fs::create_dir_all(&project_path).await.unwrap();
-        
+
         // Create project with custom data
         let mut project = Project::new("Preserve Test", &project_path, "screenplay").unwrap();
-        
+
         // Add some documents
         let doc1 = Uuid::new_v4();
         let doc2 = Uuid::new_v4();
         project.add_document(doc1);
         project.add_document(doc2);
-        
+
         // Modify metadata
         project.metadata_mut().description = "Test description".to_string();
         project.metadata_mut().tags.push("tag1".to_string());
         project.metadata_mut().tags.push("tag2".to_string());
-        
+
         // Save
         project.save().await.unwrap();
-        
+
         // Load and verify
         let loaded = Project::load(&project_path).await.unwrap();
         assert_eq!(loaded.name(), "Preserve Test");
