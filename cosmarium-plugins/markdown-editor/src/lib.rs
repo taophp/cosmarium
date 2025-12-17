@@ -343,8 +343,8 @@ impl EditorCore {
 
 /// Actions that can be performed on the dock state
 enum DockAction {
-    SplitHorizontal(SurfaceIndex, NodeIndex),
-    SplitVertical(SurfaceIndex, NodeIndex),
+    SplitHorizontal(SurfaceIndex, NodeIndex, String),
+    SplitVertical(SurfaceIndex, NodeIndex, String),
 }
 
 /// The main markdown editor plugin
@@ -386,13 +386,13 @@ impl<'a> TabViewer for EditorViewer<'a> {
         self.core.render_editor(ui, self.ctx, tab);
     }
 
-    fn context_menu(&mut self, ui: &mut egui::Ui, _tab: &mut Self::Tab, surface: SurfaceIndex, node: NodeIndex) {
+    fn context_menu(&mut self, ui: &mut egui::Ui, tab: &mut Self::Tab, surface: SurfaceIndex, node: NodeIndex) {
         if ui.button("Split Horizontal").clicked() {
-            *self.pending_action = Some(DockAction::SplitHorizontal(surface, node));
+            *self.pending_action = Some(DockAction::SplitHorizontal(surface, node, tab.clone()));
             ui.close_menu();
         }
         if ui.button("Split Vertical").clicked() {
-            *self.pending_action = Some(DockAction::SplitVertical(surface, node));
+            *self.pending_action = Some(DockAction::SplitVertical(surface, node, tab.clone()));
             ui.close_menu();
         }
 
@@ -642,12 +642,33 @@ impl PanelPlugin for MarkdownEditorPlugin {
         // Handle any pending actions from context menus
         if let Some(action) = pending_action {
             let new_tab = format!("Editor {}", self.tree.iter_all_tabs().count() + 1);
-            match action {
-                DockAction::SplitHorizontal(surface, node) => {
-                    self.tree.split((surface, node), Split::Right, 0.5, Node::leaf(new_tab));
+            
+            // Helper to copy state
+            let copy_state = |ctx: &egui::Context, source_tab: &str, new_tab: &str| {
+                let source_id = egui::Id::new("markdown_editor_textedit").with(source_tab);
+                let new_id = egui::Id::new("markdown_editor_textedit").with(new_tab);
+                
+                if let Some(state) = egui::TextEdit::load_state(ctx, source_id) {
+                    egui::TextEdit::store_state(ctx, new_id, state);
                 }
-                DockAction::SplitVertical(surface, node) => {
-                    self.tree.split((surface, node), Split::Below, 0.5, Node::leaf(new_tab));
+            };
+
+            match action {
+                DockAction::SplitHorizontal(surface, node, source_tab) => {
+                    copy_state(ui.ctx(), &source_tab, &new_tab);
+                    self.tree.split((surface, node), Split::Right, 0.5, Node::leaf(new_tab.clone()));
+                    // Request focus for the new tab
+                    ctx.set_shared_state("markdown_editor_focus_requested", true);
+                    // Also set it as active tab so it captures focus logic
+                    ctx.set_shared_state("markdown_editor_last_active_tab", new_tab);
+                }
+                DockAction::SplitVertical(surface, node, source_tab) => {
+                    copy_state(ui.ctx(), &source_tab, &new_tab);
+                    self.tree.split((surface, node), Split::Below, 0.5, Node::leaf(new_tab.clone()));
+                    // Request focus for the new tab
+                    ctx.set_shared_state("markdown_editor_focus_requested", true);
+                    // Also set it as active tab so it captures focus logic
+                    ctx.set_shared_state("markdown_editor_last_active_tab", new_tab);
                 }
             }
         }
