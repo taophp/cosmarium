@@ -17,7 +17,6 @@ serde = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 pulldown-cmark = "0.9"
-egui_ltreeview = "0.1"
 
 [lib]
 crate-type = ["cdylib", "rlib"]

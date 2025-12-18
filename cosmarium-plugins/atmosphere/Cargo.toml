@@ -16,3 +16,18 @@ egui = { workspace = true }
 serde = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
+
+# ML dependencies for emotion detection
+tract-onnx = { version = "0.21", optional = true }
+ndarray = { version = "0.15", optional = true }
+tokenizers = { version = "0.15", optional = true }
+reqwest = { version = "0.12", features = ["blocking", "stream"], optional = true }
+indicatif = { version = "0.17", optional = true }
+dirs = { version = "5.0", optional = true }
+
+[features]
+default = ["ml-emotions"]
+ml-emotions = ["tract-onnx", "ndarray", "tokenizers", "reqwest", "indicatif"]
+
+[lib]
+crate-type = ["cdylib", "rlib"]

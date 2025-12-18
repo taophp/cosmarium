@@ -122,8 +122,10 @@ fn main() -> anyhow::Result<()> {
 
     tracing::info!("Starting Cosmarium v{}", env!("CARGO_PKG_VERSION"));
 
-    // Configure simple NativeOptions to avoid depending on changing platform-specific API.
+    // Configure NativeOptions with IME support enabled for dead keys on Linux.
     let mut options = eframe::NativeOptions::default();
+    options.viewport = egui::ViewportBuilder::default()
+        .with_inner_size([args.width.unwrap_or(1200.0), args.height.unwrap_or(800.0)]);
     // Keep other defaults for renderer and platform integration.
 
     // Run the native app and handle errors explicitly (avoid `?` across non-Send errors).

@@ -33,7 +33,7 @@ use cosmarium_plugin_api::{
     Event, EventType, PanelPlugin, Plugin, PluginContext, PluginInfo, PluginType, Result,
 };
 use egui::text_edit::TextEditState;
-use egui::{Color32, Ui, Vec2};
+use egui::Ui;
 use egui_dock::{DockArea, DockState, Node, NodeIndex, Split, Style, SurfaceIndex, TabViewer};
 use serde::{Deserialize, Serialize};
 
@@ -190,7 +190,7 @@ impl EditorCore {
                     .id(egui::Id::new("markdown_editor_textedit").with(tab_id))
                     .font(egui::TextStyle::Monospace)
                     .desired_width(f32::INFINITY)
-                    .lock_focus(request_focus),
+                    .lock_focus(true), // Maintain stable focus to avoid IME/dead key resets
             )
         });
 
@@ -213,31 +213,76 @@ impl EditorCore {
             );
         }
 
-        // Log input events when editor has focus, and detect text events without focus
+        // Collect IME commit events safely to avoid deadlocks (don't call input_mut inside input)
         let editor_has_focus = response.has_focus();
+        let mut committed_text = None;
         ui.ctx().input(|input| {
-            if editor_has_focus {
-                for ev in input.events.iter() {
-                    match ev {
-                        egui::Event::Key { key, pressed, .. } => {
-                            tracing::debug!("markdown-editor.render_editor: key event: {:?}, pressed={}", key, pressed);
+            for ev in input.events.iter() {
+                match ev {
+                    egui::Event::Ime(ime_event) => {
+                        tracing::info!("markdown-editor.render_editor: IME event: {:?}", ime_event);
+                        if let egui::ImeEvent::Commit(text) = ime_event {
+                            committed_text = Some(text.clone());
                         }
-                        egui::Event::Text(text) => {
-                            tracing::debug!("markdown-editor.render_editor: text event: {:?}", text);
-                        }
-                        egui::Event::Paste(text) => {
-                            tracing::debug!("markdown-editor.render_editor: paste event: {:?}", text);
-                        }
-                        _ => {}
                     }
-                }
-            } else {
-                let text_count = input.events.iter().filter(|ev| matches!(ev, egui::Event::Text(_))).count();
-                if text_count > 0 {
-                    tracing::debug!("markdown-editor.render_editor: {} text events received while editor not focused", text_count);
+                    egui::Event::Key { key, pressed, .. } if editor_has_focus => {
+                        tracing::info!("markdown-editor.render_editor: key event: {:?}, pressed={}", key, pressed);
+                    }
+                    egui::Event::Text(text) if editor_has_focus => {
+                        tracing::info!("markdown-editor.render_editor: text event: {:?}", text);
+                    }
+                    egui::Event::Paste(text) if editor_has_focus => {
+                        tracing::info!("markdown-editor.render_editor: paste event: {:?}", text);
+                    }
+                    egui::Event::Text(_) if !editor_has_focus => {
+                        tracing::info!("markdown-editor.render_editor: text event received while editor not focused");
+                    }
+                    _ => {}
                 }
             }
         });
+
+        if let Some(text) = committed_text {
+            tracing::info!(
+                "markdown-editor.render_editor: manually inserting IME Commit({:?})",
+                text
+            );
+
+            // Directly modify self.content at the cursor position
+            if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), response.id) {
+                if let Some(range) = state.cursor.char_range() {
+                    let start_char = range.primary.index.min(range.secondary.index);
+                    let end_char = range.primary.index.max(range.secondary.index);
+
+                    // Convert char indices to byte indices for String manipulation
+                    let start_byte = self
+                        .content
+                        .char_indices()
+                        .nth(start_char)
+                        .map(|(i, _)| i)
+                        .unwrap_or(self.content.len());
+                    let end_byte = self
+                        .content
+                        .char_indices()
+                        .nth(end_char)
+                        .map(|(i, _)| i)
+                        .unwrap_or(self.content.len());
+
+                    // Replace selection (or just insert at cursor)
+                    self.content.replace_range(start_byte..end_byte, &text);
+
+                    // Update cursor position: move it after the inserted text
+                    let new_char_idx = start_char + text.chars().count();
+                    let new_cursor = egui::text::CCursor::new(new_char_idx);
+                    let new_range = egui::text::CCursorRange::one(new_cursor);
+                    state.cursor.set_char_range(Some(new_range));
+                    state.store(ui.ctx(), response.id);
+
+                    // Force repaint to show changes
+                    ui.ctx().request_repaint();
+                }
+            }
+        }
 
         // Log when TextEdit id changes (useful to detect rebuilds)
         if self
@@ -245,7 +290,7 @@ impl EditorCore {
             .map(|id| id != response.id)
             .unwrap_or(true)
         {
-            tracing::debug!(
+            tracing::info!(
                 "markdown-editor.render_editor: TextEdit id changed: old={:?} new={:?}",
                 self.text_edit_id,
                 response.id

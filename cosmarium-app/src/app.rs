@@ -129,6 +129,9 @@ impl Cosmarium {
     /// * `cc` - eframe creation context
     /// * `args` - Command line arguments
     pub fn new(cc: &eframe::CreationContext<'_>, args: AppArgs) -> Self {
+        // Enable IME for dead keys support
+        cc.egui_ctx.send_viewport_cmd(egui::ViewportCommand::IMEAllowed(true));
+
         let mut app = Self {
             core_app: Application::new(),
             plugin_context: PluginContext::new(),
@@ -1110,6 +1113,46 @@ impl Cosmarium {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     // Application info
                     ui.label(format!("Cosmarium v{}", env!("CARGO_PKG_VERSION")));
+                    ui.separator();
+
+                    // Atmosphere Status
+                    let sentiment = self.plugin_context.get_shared_state::<f32>("atmosphere_sentiment").unwrap_or(0.0);
+                    let is_analyzing = self.plugin_context.get_shared_state::<bool>("atmosphere_analyzing").unwrap_or(false);
+                    let emotions = self.plugin_context.get_shared_state::<Vec<(String, f32)>>("atmosphere_emotions").unwrap_or_default();
+
+                    if is_analyzing {
+                        ui.add(egui::Spinner::new().size(12.0));
+                    }
+
+                    // Color square
+                    let hue = if emotions.is_empty() {
+                        0.0
+                    } else {
+                        // Use the first emotion for hue
+                        cosmarium_atmosphere::classifier::emotion_to_hue(&emotions[0].0)
+                    };
+
+                    let color = if emotions.is_empty() && sentiment == 0.0 {
+                        egui::Color32::from_gray(100)
+                    } else {
+                        // Simple HSL to RGB for the square
+                        let h = hue / 360.0;
+                        let s = 0.5;
+                        let l = 0.5;
+                        egui::Color32::from_additive_luminance((l * 255.0) as u8) // Placeholder, better to use proper HSL
+                    };
+
+                    let (rect, response) = ui.allocate_at_least(egui::vec2(12.0, 12.0), egui::Sense::hover());
+                    ui.painter().rect_filled(rect, 2.0, color);
+
+                    if !emotions.is_empty() {
+                        response.on_hover_ui(|ui| {
+                            ui.label("Detected Emotions:");
+                            for (emotion, score) in emotions {
+                                ui.label(format!("{}: {:.1}%", emotion, score * 100.0));
+                            }
+                        });
+                    }
                 });
             });
         });
