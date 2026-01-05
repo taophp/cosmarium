@@ -16,6 +16,8 @@ egui = { workspace = true }
 serde = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
+lru = "0.12"
+strsim = "0.11"
 
 # ML dependencies for emotion detection
 tract-onnx = { version = "0.21", optional = true }
