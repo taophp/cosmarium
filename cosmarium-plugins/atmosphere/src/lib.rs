@@ -210,10 +210,12 @@ impl AtmospherePlugin {
     }
 
     #[cfg(feature = "ml-emotions")]
-    // Helper to get paragraph bounds and content
-    fn get_current_paragraph(content: &str, cursor_idx: usize) -> (usize, usize, &str) {
-        let start = content[..cursor_idx].rfind("\n\n").map(|i| i + 2).unwrap_or(0);
-        let end = content[cursor_idx..].find("\n\n").map(|i| cursor_idx + i).unwrap_or(content.len());
+    // Helper to get paragraph bounds and content using byte indices
+    fn get_current_paragraph(content: &str, cursor_byte_idx: usize) -> (usize, usize, &str) {
+        let cursor_byte_idx = cursor_byte_idx.min(content.len());
+        
+        let start = content[..cursor_byte_idx].rfind("\n\n").map(|i| i + 2).unwrap_or(0);
+        let end = content[cursor_byte_idx..].find("\n\n").map(|i| cursor_byte_idx + i).unwrap_or(content.len());
         (start, end, &content[start..end])
     }
     
@@ -341,7 +343,14 @@ impl Plugin for AtmospherePlugin {
             
             #[cfg(feature = "ml-emotions")]
             {
-                let (p_start, _, p_content) = Self::get_current_paragraph(&content, cursor_idx);
+                // Safely convert character index to byte index
+                let cursor_byte_idx = content
+                    .char_indices()
+                    .nth(cursor_idx)
+                    .map(|(i, _)| i)
+                    .unwrap_or(content.len());
+
+                let (p_start, _, p_content) = Self::get_current_paragraph(&content, cursor_byte_idx);
                 
                 // 1. Navigation Caching
                 use std::collections::hash_map::DefaultHasher;
@@ -375,7 +384,7 @@ impl Plugin for AtmospherePlugin {
                     
                     if dist > threshold || self.last_analyzed_paragraph.is_empty() {
                          tracing::debug!("Change threshold exceeded (dist: {}/threshold: {}), triggering analysis", dist, threshold);
-                         let relative_cursor = cursor_idx.saturating_sub(p_start);
+                         let relative_cursor = cursor_byte_idx.saturating_sub(p_start);
                          self.analyze_sentiment_ml_async(p_content.to_string(), relative_cursor);
                          // Note: cache update happens when analysis completes in worker
                          self.last_analyzed_paragraph = p_content.to_string();
