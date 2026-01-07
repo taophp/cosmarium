@@ -12,6 +12,7 @@ use cosmarium_markdown_editor::MarkdownEditorPlugin;
 use cosmarium_outline::OutlinePlugin;
 use cosmarium_plugin_api::{Event, EventType, PanelPlugin, Plugin, PluginContext};
 use eframe::egui;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
@@ -23,8 +24,10 @@ pub struct Cosmarium {
     core_app: Application,
     /// Plugin context for inter-plugin communication
     plugin_context: PluginContext,
-    /// Current smoothed sentiment value (for transitions)
+    /// Current smoothed sentiment value (for direction/fallback)
     current_sentiment: f32,
+    /// Current smoothed intensity value (for transition strength)
+    current_intensity: f32,
     /// Currently loaded plugins
     plugins: HashMap<String, Box<dyn Plugin>>,
     /// Panel plugins for UI rendering
@@ -136,6 +139,7 @@ impl Cosmarium {
             core_app: Application::new(),
             plugin_context: PluginContext::new(),
             current_sentiment: 0.0,
+            current_intensity: 0.0,
             plugins: HashMap::new(),
             panel_plugins: HashMap::new(),
             config: Config::default(),
@@ -1117,39 +1121,39 @@ impl Cosmarium {
 
                     // Atmosphere Status
                     let sentiment = self.plugin_context.get_shared_state::<f32>("atmosphere_sentiment").unwrap_or(0.0);
+
                     let is_analyzing = self.plugin_context.get_shared_state::<bool>("atmosphere_analyzing").unwrap_or(false);
                     let emotions = self.plugin_context.get_shared_state::<Vec<(String, f32)>>("atmosphere_emotions").unwrap_or_default();
+                    let p_idx = self.plugin_context.get_shared_state::<usize>("atmosphere_paragraph_idx").unwrap_or(0);
+                    let emotion_name = self.plugin_context.get_shared_state::<String>("atmosphere_current_emotion").unwrap_or_else(|| "Neutral".to_string());
+
+                    if p_idx > 0 {
+                        ui.label(format!("Atmo: P{}", p_idx));
+                    }
 
                     if is_analyzing {
                         ui.add(egui::Spinner::new().size(12.0));
                     }
 
-                    // Color square
-                    let hue = if emotions.is_empty() {
-                        0.0
-                    } else {
-                        // Use the first emotion for hue
-                        cosmarium_atmosphere::classifier::emotion_to_hue(&emotions[0].0)
-                    };
-
-                    let color = if emotions.is_empty() && sentiment == 0.0 {
-                        egui::Color32::from_gray(100)
-                    } else {
-                        // Simple HSL to RGB for the square
-                        let h = hue / 360.0;
-                        let s = 0.5;
-                        let l = 0.5;
-                        egui::Color32::from_additive_luminance((l * 255.0) as u8) // Placeholder, better to use proper HSL
-                    };
+                    // Color square using the current theme background
+                    let color = ui.visuals().panel_fill;
 
                     let (rect, response) = ui.allocate_at_least(egui::vec2(12.0, 12.0), egui::Sense::hover());
                     ui.painter().rect_filled(rect, 2.0, color);
+                    ui.painter().rect_stroke(rect, 2.0, egui::Stroke::new(1.0, egui::Color32::from_gray(128)), egui::StrokeKind::Outside);
 
-                    if !emotions.is_empty() {
+                    if !emotions.is_empty() || p_idx > 0 {
                         response.on_hover_ui(|ui| {
-                            ui.label("Detected Emotions:");
-                            for (emotion, score) in emotions {
-                                ui.label(format!("{}: {:.1}%", emotion, score * 100.0));
+                            ui.label(format!("Climat: {}", emotion_name));
+                            ui.label(format!("Sentiment: {:.2}", sentiment));
+                            if p_idx > 0 {
+                                ui.label(format!("Paragraphe: #{}", p_idx));
+                            }
+                            if !emotions.is_empty() {
+                                ui.separator();
+                                for (emotion, score) in emotions.iter().take(3) {
+                                    ui.label(format!("{}: {:.1}%", emotion, score * 100.0));
+                                }
                             }
                         });
                     }
@@ -1638,6 +1642,17 @@ impl eframe::App for Cosmarium {
     }
 }
 
+#[derive(Deserialize, Debug, Clone)]
+struct SharedPalette {
+    main_bg_h: f32,
+    main_bg_s: f32,
+    main_bg_l: f32,
+    main_fg_h: f32,
+    main_fg_s: f32,
+    main_fg_l: f32,
+    is_light: bool,
+}
+
 impl Cosmarium {
     fn handle_close_request(&mut self) -> bool {
         // If force close is set, allow closing immediately
@@ -1696,141 +1711,134 @@ impl Cosmarium {
         }
     }
 
-    /// Update the atmosphere (theme) based on sentiment.
+    /// Update the atmosphere (theme) based on sentiment and intensity.
     fn update_atmosphere(&mut self, ctx: &egui::Context) {
-        if let Some(target_sentiment) = self
-            .plugin_context
-            .get_shared_state::<f32>("atmosphere_sentiment")
-        {
-            // Smooth transition
-            // We want to move current_sentiment towards target_sentiment
-            // Speed: 2.0 means it takes ~0.5s to close the gap significantly (exponential decay)
-            let dt = ctx.input(|i| i.stable_dt).min(0.1); // Cap dt to avoid jumps
-            let speed = 4.0; // Higher = faster. 4.0 is snappy but smooth.
+        // Read raw values from shared state
+        let target_sentiment = self.plugin_context.get_shared_state::<f32>("atmosphere_sentiment").unwrap_or(0.0);
+        let target_intensity = self.plugin_context.get_shared_state::<f32>("atmosphere_intensity").unwrap_or(0.0);
+        
+        // Update smoothed values (low-pass filter for stability)
+        // We want to move towards target values over time
+        let dt = ctx.input(|i| i.stable_dt).min(0.1); // Cap dt
+        let s_speed = 4.0; // Sentiment speed
+        let i_speed = 6.0; // Intensity speed (slightly snappier)
 
-            let diff = target_sentiment - self.current_sentiment;
-            if diff.abs() > 0.001 {
-                self.current_sentiment += diff * speed * dt;
-                // Request repaint to animate
-                ctx.request_repaint();
-            } else {
-                self.current_sentiment = target_sentiment;
-            }
-
-            let sentiment = self.current_sentiment;
-
-            // HSL-based theme generation
-            // Sentiment maps to Hue and Saturation/Lightness adjustments
-
-            let (hue, saturation, lightness_bg, lightness_fg) = if sentiment > 0.0 {
-                // Positive: Gold/Warm (Hue ~45)
-                // High lightness for background (Light theme)
-                (45.0, 0.6 * sentiment.abs(), 0.95, 0.1)
-            } else {
-                // Negative: Blue/Cool (Hue ~220)
-                // Low lightness for background (Dark theme)
-                (220.0, 0.5 * sentiment.abs(), 0.05, 0.9)
-            };
-
-            // Helper to convert HSL to Color32
-            fn hsl_to_color(h: f32, s: f32, l: f32) -> egui::Color32 {
-                let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
-                let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
-                let m = l - c / 2.0;
-
-                let (r, g, b) = if h < 60.0 {
-                    (c, x, 0.0)
-                } else if h < 120.0 {
-                    (x, c, 0.0)
-                } else if h < 180.0 {
-                    (0.0, c, x)
-                } else if h < 240.0 {
-                    (0.0, x, c)
-                } else if h < 300.0 {
-                    (x, 0.0, c)
-                } else {
-                    (c, 0.0, x)
-                };
-
-                egui::Color32::from_rgb(
-                    ((r + m) * 255.0) as u8,
-                    ((g + m) * 255.0) as u8,
-                    ((b + m) * 255.0) as u8,
-                )
-            }
-
-            // Interpolate between neutral (gray) and target sentiment color
-            // Neutral base: Dark Gray (L=0.1) or Light Gray (L=0.9) depending on sentiment direction?
-            // Actually, let's just lerp the HSL parameters or the resulting colors.
-            // For simplicity and "fulgurance", we'll just use the calculated HSL directly but modulated by sentiment intensity.
-
-            // Base neutral (Dark Mode default)
-            let base_bg = egui::Color32::from_rgb(27, 27, 27);
-
-            // Target colors
-            let target_bg = hsl_to_color(hue, saturation, lightness_bg);
-
-            // Interpolate background
-            // Apply easing to make it more responsive (root curve)
-            // This ensures that even moderate sentiment scores result in a strong visual shift.
-            let raw_factor = sentiment.abs().clamp(0.0, 1.0);
-            let factor = raw_factor.powf(0.5); // Sqrt makes 0.25 -> 0.5, 0.5 -> 0.7, etc.
-
-            let new_bg = lerp_color(base_bg, target_bg, factor);
-
-            // Faint background (for panels/windows)
-            let new_faint = lerp_color(
-                egui::Color32::from_additive_luminance(10),
-                hsl_to_color(
-                    hue,
-                    saturation * 0.5,
-                    lightness_bg * 0.9 + (if lightness_bg > 0.5 { -0.1 } else { 0.1 }),
-                ),
-                factor,
-            );
-
-            // Dynamic Contrast Calculation
-            // Instead of lerping text color (which leads to gray-on-gray),
-            // we calculate high-contrast text based on the resulting background.
-            let bg_lum =
-                0.299 * new_bg.r() as f32 + 0.587 * new_bg.g() as f32 + 0.114 * new_bg.b() as f32;
-
-            // Use a threshold with hysteresis or just a hard cut for maximum readability
-            let new_fg = if bg_lum > 140.0 {
-                // Bright background -> Dark text (Deep Gray/Black)
-                egui::Color32::from_rgb(10, 10, 15)
-            } else {
-                // Dark background -> Light text (White/Light Gray)
-                egui::Color32::from_rgb(240, 240, 245)
-            };
-
-            let mut visuals = if bg_lum > 140.0 {
-                egui::Visuals::light()
-            } else {
-                egui::Visuals::dark()
-            };
-
-            visuals.panel_fill = new_bg;
-            visuals.window_fill = new_bg;
-            visuals.faint_bg_color = new_faint;
-
-            // CRITICAL: Override extreme background for TextEdit to ensure it matches
-            visuals.extreme_bg_color = new_bg;
-
-            // Text colors
-            visuals.widgets.noninteractive.fg_stroke.color = new_fg;
-            visuals.widgets.inactive.fg_stroke.color = new_fg;
-            visuals.widgets.hovered.fg_stroke.color = new_fg;
-            visuals.widgets.active.fg_stroke.color = new_fg;
-            visuals.widgets.open.fg_stroke.color = new_fg;
-
-            // Selection
-            visuals.selection.bg_fill = hsl_to_color(hue, 0.8, 0.5);
-            visuals.selection.stroke.color = new_fg;
-
-            // Apply to context
-            ctx.set_visuals(visuals);
+        let s_diff = target_sentiment - self.current_sentiment;
+        if s_diff.abs() > 0.001 {
+            self.current_sentiment += s_diff * s_speed * dt;
+            ctx.request_repaint();
+        } else {
+            self.current_sentiment = target_sentiment;
         }
+
+        let i_diff = target_intensity - self.current_intensity;
+        if i_diff.abs() > 0.001 {
+            self.current_intensity += i_diff * i_speed * dt;
+            ctx.request_repaint();
+        } else {
+            self.current_intensity = target_intensity;
+        }
+
+        let sentiment = self.current_sentiment;
+        let intensity = self.current_intensity;
+
+        // 1. Try to get the rich RYB-based palette from shared state
+        let shared_palette = self
+            .plugin_context
+            .get_shared_state::<String>("atmosphere_palette")
+            .and_then(|json| serde_json::from_str::<SharedPalette>(&json).ok());
+
+        // 2. Determine target colors (either from SharedPalette or HSL fallback)
+        let (hue, saturation, lightness_bg, _lightness_fg) = if let Some(p) = shared_palette {
+            (p.main_bg_h, p.main_bg_s / 100.0, p.main_bg_l / 100.0, p.main_fg_l / 100.0)
+        } else if sentiment > 0.0 {
+            // Fallback Positive: Gold/Warm (Hue ~45)
+            (45.0, 0.6 * sentiment.abs(), 0.95, 0.1)
+        } else {
+            // Fallback Negative: Blue/Cool (Hue ~220)
+            (220.0, 0.5 * sentiment.abs(), 0.05, 0.9)
+        };
+
+        // Helper to convert HSL to Color32
+        fn hsl_to_color(h: f32, s: f32, l: f32) -> egui::Color32 {
+            let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+            let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
+            let m = l - c / 2.0;
+
+            let (r, g, b) = if h < 60.0 {
+                (c, x, 0.0)
+            } else if h < 120.0 {
+                (x, c, 0.0)
+            } else if h < 180.0 {
+                (0.0, c, x)
+            } else if h < 240.0 {
+                (0.0, x, c)
+            } else if h < 300.0 {
+                (x, 0.0, c)
+            } else {
+                (c, 0.0, x)
+            };
+
+            egui::Color32::from_rgb(
+                ((r + m) * 255.0) as u8,
+                ((g + m) * 255.0) as u8,
+                ((b + m) * 255.0) as u8,
+            )
+        }
+
+        // Base neutral (Dark Mode default)
+        let base_bg = egui::Color32::from_rgb(27, 27, 27);
+
+        // Target colors
+        let target_bg = hsl_to_color(hue, saturation, lightness_bg);
+
+        // Interpolate background
+        // Use intensity as the primary transition factor
+        let factor = intensity.clamp(0.0, 1.0).powf(0.5); // Sqrt makes 0.25 -> 0.5, 0.5 -> 0.7, etc.
+
+        let new_bg = lerp_color(base_bg, target_bg, factor);
+
+        // Faint background (for panels/windows)
+        let new_faint = lerp_color(
+            egui::Color32::from_additive_luminance(10),
+            hsl_to_color(
+                hue,
+                saturation * 0.5,
+                lightness_bg * 0.9 + (if lightness_bg > 0.5 { -0.1 } else { 0.1 }),
+            ),
+            factor,
+        );
+
+        // Dynamic Contrast Calculation
+        let bg_lum = 0.299 * new_bg.r() as f32 + 0.587 * new_bg.g() as f32 + 0.114 * new_bg.b() as f32;
+
+        let new_fg = if bg_lum > 140.0 {
+            egui::Color32::from_rgb(10, 10, 15)
+        } else {
+            egui::Color32::from_rgb(240, 240, 245)
+        };
+
+        let mut visuals = if bg_lum > 140.0 {
+            egui::Visuals::light()
+        } else {
+            egui::Visuals::dark()
+        };
+
+        visuals.panel_fill = new_bg;
+        visuals.window_fill = new_bg;
+        visuals.faint_bg_color = new_faint;
+        visuals.extreme_bg_color = new_bg;
+
+        visuals.widgets.noninteractive.fg_stroke.color = new_fg;
+        visuals.widgets.inactive.fg_stroke.color = new_fg;
+        visuals.widgets.hovered.fg_stroke.color = new_fg;
+        visuals.widgets.active.fg_stroke.color = new_fg;
+        visuals.widgets.open.fg_stroke.color = new_fg;
+
+        visuals.selection.bg_fill = hsl_to_color(hue, 0.8, 0.5);
+        visuals.selection.stroke.color = new_fg;
+
+        ctx.set_visuals(visuals);
     }
 }
 

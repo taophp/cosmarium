@@ -1131,6 +1131,7 @@ dependencies = [
  "ndarray 0.15.6",
  "reqwest",
  "serde",
+ "serde_json",
  "strsim 0.11.1",
  "tokenizers",
  "tracing",

@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use std::path::Path;
 use tokenizers::Tokenizer;
 use tract_onnx::prelude::*;
+use crate::color::{Harmony, RybWheel, AtmospherePalette};
 
 /// Emotion labels from GoEmotions dataset (28 emotions)
 const EMOTION_LABELS: [&str; 28] = [
@@ -179,4 +180,47 @@ pub fn emotions_to_sentiment(emotions: &[EmotionResult]) -> f32 {
     } else {
         0.0
     }
+}
+
+/// Generate a harmonized palette based on the detected emotions
+pub fn emotions_to_palette(emotions: &[EmotionResult]) -> AtmospherePalette {
+    if emotions.is_empty() {
+        // Neutral palette (Gray-ish Blue)
+        return RybWheel::generate_palette(240.0, 10.0, 10.0, Harmony::Mono, 1.0);
+    }
+    
+    // For now, take the strongest emotion as the base for the hue
+    // TODO: Blend hues based on top-3 emotions
+    let top = &emotions[0];
+    
+    let (ryb_hue, harmony, saturation, lightness) = match top.emotion.as_str() {
+        // Yellow (Joy)
+        "joy" | "amusement" | "excitement" | "pride" => (120.0, Harmony::Triad, 70.0, 89.0),
+        
+        // Red (Strong/Positive) - Passion
+        "love" | "caring" | "gratitude" | "admiration" => (0.0, Harmony::Adjacent, 60.0, 89.0),
+        
+        // Red (Aggressive) - Anger
+        "anger" | "annoyance" | "disapproval" | "disgust" => (0.0, Harmony::Triad, 80.0, 15.0),
+        
+        // Violet/Purple - Tension/Fear
+        "fear" | "nervousness" | "embarrassment" => (300.0, Harmony::Tetrad, 50.0, 10.0),
+        
+        // Blue - Sadness
+        "sadness" | "grief" | "disappointment" | "remorse" => (240.0, Harmony::Mono, 40.0, 5.0),
+        
+        // Orange - Surprise/Discovery
+        "surprise" | "curiosity" | "realization" | "confusion" => (60.0, Harmony::Complementary, 80.0, 89.0),
+        
+        // Green - Calm/Hope
+        "approval" | "optimism" | "relief" | "desire" => (180.0, Harmony::Adjacent, 60.0, 89.0),
+
+        // Neutral / Fallback
+        _ => (240.0, Harmony::Mono, 5.0, 10.0),
+    };
+    
+    // Intensity is derived from the score of the top emotion
+    let intensity = top.score;
+    
+    RybWheel::generate_palette(ryb_hue, saturation, lightness, harmony, intensity)
 }

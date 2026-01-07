@@ -14,6 +14,7 @@ categories.workspace = true
 cosmarium-plugin-api = { path = "../../cosmarium-plugin-api" }
 egui = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 lru = "0.12"

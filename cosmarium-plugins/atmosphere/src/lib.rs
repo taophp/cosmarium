@@ -6,9 +6,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 pub mod downloader;
 #[cfg(feature = "ml-emotions")]
 pub mod classifier;
+#[cfg(feature = "ml-emotions")]
+pub mod color;
 
 #[cfg(feature = "ml-emotions")]
-use classifier::{EmotionClassifier, emotions_to_sentiment};
+use classifier::{EmotionClassifier, emotions_to_sentiment, emotions_to_palette, EmotionResult};
+#[cfg(feature = "ml-emotions")]
+use color::AtmospherePalette;
 
 #[cfg(feature = "ml-emotions")]
 use lru::LruCache;
@@ -36,21 +40,27 @@ pub struct AtmospherePlugin {
     analysis_in_progress: Arc<AtomicBool>,
     #[cfg(feature = "ml-emotions")]
     /// Shared sentiment result from worker thread (sentiment, top_emotions)
-    pending_sentiment: Arc<Mutex<Option<(f32, Vec<(String, f32)>)>>>,
+    pending_sentiment: Arc<Mutex<Option<(f32, Vec<EmotionResult>)>>>,
     #[cfg(feature = "ml-emotions")]
     /// Last detected emotions
-    last_emotions: Vec<(String, f32)>,
+    last_emotions: Vec<EmotionResult>,
     #[cfg(feature = "ml-emotions")]
-    /// Whether ML is available
-    ml_available: bool,
+    /// Last detected intensity (max emotion score)
+    last_intensity: f32,
+    #[cfg(feature = "ml-emotions")]
+    /// Current color palette
+    current_palette: Option<AtmospherePalette>,
     
     // -- Optimization fields --
     #[cfg(feature = "ml-emotions")]
-    /// Cache of paragraph sentiments keyed by content hash
-    paragraph_cache: LruCache<u64, (f32, Vec<(String, f32)>)>,
+    /// Cache of paragraph sentiments keyed by content hash (sentiment, top_emotions, palette)
+    paragraph_cache: LruCache<u64, (f32, Vec<EmotionResult>, Option<AtmospherePalette>)>,
     #[cfg(feature = "ml-emotions")]
     /// Content of the current paragraph during last analysis (for diffing)
     last_analyzed_paragraph: String,
+    #[cfg(feature = "ml-emotions")]
+    /// Hash of the paragraph currently being analyzed in background
+    currently_analyzing_hash: Option<u64>,
 }
 
 impl Default for AtmospherePlugin {
@@ -70,18 +80,22 @@ impl Default for AtmospherePlugin {
             #[cfg(feature = "ml-emotions")]
             last_emotions: Vec::new(),
             #[cfg(feature = "ml-emotions")]
-            ml_available: false,
+            last_intensity: 0.0,
+            #[cfg(feature = "ml-emotions")]
+            current_palette: None,
             #[cfg(feature = "ml-emotions")]
             paragraph_cache: LruCache::new(NonZeroUsize::new(100).unwrap()),
             #[cfg(feature = "ml-emotions")]
             last_analyzed_paragraph: String::new(),
+            #[cfg(feature = "ml-emotions")]
+            currently_analyzing_hash: None,
         }
     }
 }
 
 impl AtmospherePlugin {
     pub fn new() -> Self {
-        let mut plugin = Self::default();
+        let plugin = Self::default();
         
         #[cfg(feature = "ml-emotions")]
         {
@@ -114,28 +128,38 @@ impl AtmospherePlugin {
     }
 
     #[cfg(feature = "ml-emotions")]
+    /// Check for pending ML results and apply them
+    fn check_pending_analysis(&mut self) {
+        if let Ok(mut pending) = self.pending_sentiment.try_lock() {
+            if let Some((sentiment, emotions)) = pending.take() {
+                self.sentiment = sentiment;
+                self.last_emotions = emotions.clone();
+                self.last_intensity = emotions.iter().map(|e| e.score).fold(0.0_f32, f32::max);
+                
+                let palette = emotions_to_palette(&emotions);
+                self.current_palette = Some(palette.clone());
+                
+                // Update cache with result using the hash from when we started the analysis
+                if let Some(hash) = self.currently_analyzing_hash.take() {
+                    self.paragraph_cache.put(hash, (sentiment, emotions, Some(palette)));
+                    tracing::debug!("Atmosphere result cached for hash: {}", hash);
+                }
+                
+                tracing::debug!("Applied ML sentiment: {}", sentiment);
+            }
+        }
+    }
+
+    #[cfg(feature = "ml-emotions")]
     /// Analyze sentiment using ML in a separate thread (non-blocking)
-    fn analyze_sentiment_ml_async(&mut self, content: String, relative_cursor: usize) {
+    fn analyze_sentiment_ml_async(&mut self, content: String, hash: u64, relative_cursor: usize, p_idx: usize) {
         // Check if analysis is already running
         if self.analysis_in_progress.load(Ordering::Relaxed) {
             return; // Skip this analysis, previous one still running
         }
         
-        // ... (standard pending check)
-        if let Ok(mut pending) = self.pending_sentiment.try_lock() {
-            if let Some((sentiment, emotions)) = pending.take() {
-                self.sentiment = sentiment;
-                self.last_emotions = emotions.clone();
-                // Update cache with result
-                use std::collections::hash_map::DefaultHasher;
-                let mut hasher = DefaultHasher::new();
-                self.last_analyzed_paragraph.hash(&mut hasher);
-                let hash = hasher.finish();
-                self.paragraph_cache.put(hash, (sentiment, emotions));
-                
-                tracing::debug!("Applied ML sentiment: {}", sentiment);
-            }
-        }
+        // Track what we are analyzing to cache it correctly later
+        self.currently_analyzing_hash = Some(hash);
         
         // Try to get classifier
         let classifier_opt = {
@@ -161,7 +185,7 @@ impl AtmospherePlugin {
         
         std::thread::spawn(move || {
             // ... (worker logic same as before)
-            tracing::info!("ML Emotion analysis started...");
+            tracing::info!("[P#{}] ML Emotion analysis started...", p_idx);
             let result = {
                 if let Ok(lock) = classifier_arc.lock() {
                     if let Some(ref classifier) = *lock {
@@ -178,22 +202,18 @@ impl AtmospherePlugin {
                 Ok(emotions) => {
                     if !emotions.is_empty() {
                         let sentiment = emotions_to_sentiment(&emotions);
+                        let palette = emotions_to_palette(&emotions);
                         
-                        // Log detailed results
-                        let mut emotion_str = String::new();
-                        let mut emotions_vec = Vec::new();
-                        for (i, res) in emotions.iter().take(3).enumerate() {
-                            if i > 0 { emotion_str.push_str(", "); }
-                            emotion_str.push_str(&format!("{}: {:.2}", res.emotion, res.score));
-                            emotions_vec.push((res.emotion.clone(), res.score));
-                        }
-                        tracing::info!("✓ ML Emotion analysis complete: sentiment={:.2}, emotions=[{}]", sentiment, emotion_str);
+                        tracing::info!(
+                            "✓ [P#{}] ML Emotion analysis complete: sentiment={:.2}, dominant={} ({} @ H:{:.0} S:{:.1} L:{:.1})", 
+                            p_idx, sentiment, emotions[0].emotion, palette.color_name, palette.main_bg_h, palette.main_bg_s, palette.main_bg_l
+                        );
 
                         if let Ok(mut pending) = result_arc.lock() {
-                            *pending = Some((sentiment, emotions_vec));
+                            *pending = Some((sentiment, emotions));
                         }
                     } else {
-                        tracing::info!("✓ ML Emotion analysis complete: neutral");
+                        tracing::info!("✓ [P#{}] ML Emotion analysis complete: neutral", p_idx);
                         if let Ok(mut pending) = result_arc.lock() {
                             *pending = Some((0.0, Vec::new()));
                         }
@@ -216,23 +236,43 @@ impl AtmospherePlugin {
         
         let start = content[..cursor_byte_idx].rfind("\n\n").map(|i| i + 2).unwrap_or(0);
         let end = content[cursor_byte_idx..].find("\n\n").map(|i| cursor_byte_idx + i).unwrap_or(content.len());
-        (start, end, &content[start..end])
+        
+        // Trim boundaries for stability
+        let slice = &content[start..end];
+        let trimmed = slice.trim();
+        
+        if trimmed.is_empty() {
+            return (start, end, "");
+        }
+        
+        // Adjust start/end to match trimmed content
+        let lead_space = slice.len() - slice.trim_start().len();
+        let trail_space = slice.len() - slice.trim_end().len();
+        
+        (start + lead_space, end - trail_space, trimmed)
     }
     
     #[cfg(feature = "ml-emotions")]
-    fn get_previous_paragraph_sentiment(&mut self, content: &str, current_start: usize) -> Option<f32> {
-        if current_start <= 2 { return None; }
-        // Look before the current paragraph (skip the \n\n)
-        let slice_before = &content[..current_start-2];
-        let prev_start = slice_before.rfind("\n\n").map(|i| i + 2).unwrap_or(0);
-        let prev_content = &slice_before[prev_start..];
+    fn get_previous_paragraph_sentiment(&mut self, content: &str, p_start: usize) -> Option<(f32, f32, Option<AtmospherePalette>)> {
+        let text_before = &content[..p_start];
+        let prev_p_end = text_before.trim_end().rfind('\n').map(|i| i + 1).unwrap_or(0);
+        let (_, _, prev_p_content) = Self::get_current_paragraph(content, prev_p_end.saturating_sub(1));
         
         use std::collections::hash_map::DefaultHasher;
         let mut hasher = DefaultHasher::new();
-        prev_content.hash(&mut hasher);
+        prev_p_content.hash(&mut hasher);
         let hash = hasher.finish();
-        
-        self.paragraph_cache.get(&hash).map(|(s, _)| *s)
+
+        self.paragraph_cache.get(&hash).map(|(s, e, p)| {
+            let intensity = e.iter().map(|er| er.score).fold(0.0_f32, f32::max);
+            (*s, intensity, p.clone())
+        })
+    }
+
+    fn get_paragraph_index(content: &str, byte_idx: usize) -> usize {
+        let text_before = &content[..byte_idx.min(content.len())];
+        // Count \n\n occurrences
+        text_before.matches("\n\n").count() + 1
     }
 
     /// Lexicon-based fallback (original implementation)
@@ -333,6 +373,9 @@ impl Plugin for AtmospherePlugin {
     }
 
     fn update(&mut self, ctx: &mut PluginContext) -> Result<()> {
+        #[cfg(feature = "ml-emotions")]
+        self.check_pending_analysis();
+
         if let Some(content) = ctx.get_shared_state::<String>("markdown_editor_content") {
             let cursor_idx = ctx
                 .get_shared_state::<usize>("markdown_editor_cursor_idx")
@@ -358,19 +401,23 @@ impl Plugin for AtmospherePlugin {
                 p_content.hash(&mut hasher);
                 let p_hash = hasher.finish();
                 
-                if let Some((cached_sentiment, cached_emotions)) = self.paragraph_cache.get(&p_hash) {
+                if let Some((cached_sentiment, cached_emotions, cached_palette)) = self.paragraph_cache.get(&p_hash) {
                     tracing::debug!("Atmosphere Cache HIT for paragraph hash: {}", p_hash);
                     self.sentiment = *cached_sentiment;
                     self.last_emotions = cached_emotions.clone();
+                    self.last_intensity = cached_emotions.iter().map(|e| e.score).fold(0.0_f32, f32::max);
+                    self.current_palette = cached_palette.clone();
                     
-                    // Update tracked content to match the cache hit
+                    // Update tracked content to match the cache hit (ensures stability when starting to edit)
                     self.last_analyzed_paragraph = p_content.to_string();
                 } else if p_content.len() < 50 {
                     // 2. Inheritance (Short new paragraphs)
                     // If we don't have a cache hit but paragraph is short, strictly inherit and skip analysis
-                    if let Some(prev_sentiment) = self.get_previous_paragraph_sentiment(&content, p_start) {
+                    if let Some((prev_sentiment, prev_intensity, prev_palette)) = self.get_previous_paragraph_sentiment(&content, p_start) {
                         tracing::debug!("Inheriting sentiment from previous paragraph (length {})", p_content.len());
                         self.sentiment = prev_sentiment;
+                        self.last_intensity = prev_intensity;
+                        self.current_palette = prev_palette;
                         // We reset last_analyzed_paragraph to empty so that when it reaches 50, it triggers immediately
                         self.last_analyzed_paragraph = String::new();
                     } else {
@@ -384,10 +431,13 @@ impl Plugin for AtmospherePlugin {
                     
                     if dist > threshold || self.last_analyzed_paragraph.is_empty() {
                          tracing::debug!("Change threshold exceeded (dist: {}/threshold: {}), triggering analysis", dist, threshold);
-                         let relative_cursor = cursor_byte_idx.saturating_sub(p_start);
-                         self.analyze_sentiment_ml_async(p_content.to_string(), relative_cursor);
-                         // Note: cache update happens when analysis completes in worker
-                         self.last_analyzed_paragraph = p_content.to_string();
+                          let relative_cursor = cursor_byte_idx.saturating_sub(p_start);
+                          let p_idx = Self::get_paragraph_index(&content, cursor_byte_idx);
+                          ctx.set_shared_state("atmosphere_paragraph_idx", p_idx);
+                          
+                          self.analyze_sentiment_ml_async(p_content.to_string(), p_hash, relative_cursor, p_idx);
+                          // Update local tracker immediately to prevent spamming
+                          self.last_analyzed_paragraph = p_content.to_string();
                     }
                 }
             }
@@ -423,9 +473,24 @@ impl Plugin for AtmospherePlugin {
         
         #[cfg(feature = "ml-emotions")]
         {
-            let is_analyzing = self.analysis_in_progress.load(Ordering::Relaxed);
-            ctx.set_shared_state("atmosphere_analyzing", is_analyzing);
+            ctx.set_shared_state("atmosphere_intensity", self.last_intensity);
+            ctx.set_shared_state("atmosphere_analyzing", self.analysis_in_progress.load(Ordering::Relaxed));
             ctx.set_shared_state("atmosphere_emotions", self.last_emotions.clone());
+            
+            if let Some(palette) = &self.current_palette {
+                if let Ok(palette_json) = serde_json::to_string(palette) {
+                    ctx.set_shared_state("atmosphere_palette", palette_json);
+                    ctx.set_shared_state("atmosphere_current_emotion", palette.color_name.clone());
+                }
+            }
+            
+            // Map EmotionResult back to (String, f32) for legacy shared state if needed,
+            // or just publish the EmotionResult list if serializable.
+            // For now, let's keep atmosphere_emotions as Vec<(String, f32)> for compatibility
+            let compat_emotions: Vec<(String, f32)> = self.last_emotions.iter()
+                .map(|er| (er.emotion.clone(), er.score))
+                .collect();
+            ctx.set_shared_state("atmosphere_emotions", compat_emotions);
         }
 
         Ok(())
