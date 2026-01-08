@@ -337,6 +337,38 @@ impl EditorCore {
 
         // Handle content changes
         if response.changed() {
+            // Dialogue Assistance: Replace -- with — (em-dash)
+            if let Some(state) = egui::TextEdit::load_state(ui.ctx(), response.id) {
+                if let Some(range) = state.cursor.char_range() {
+                    let cursor_idx = range.primary.index;
+                    if cursor_idx >= 2 {
+                        // Check the two characters exactly before the cursor
+                        let text_near_cursor: String =
+                            self.content.chars().skip(cursor_idx - 2).take(2).collect();
+                        if text_near_cursor == "--" {
+                            // Find byte indices for replacement
+                            let mut char_indices = self.content.char_indices();
+                            let start_byte = char_indices.nth(cursor_idx - 2).map(|(i, _)| i);
+                            let end_byte = char_indices.nth(1).map(|(i, _)| i); // .nth(1) because we already consumed up to cursor_idx - 2
+
+                            if let (Some(start), Some(end)) = (start_byte, end_byte) {
+                                self.content.replace_range(start..end, "—");
+
+                                // Adjust cursor: since 2 chars became 1, moved back by 1
+                                let mut new_state = state.clone();
+                                new_state.cursor.set_char_range(Some(
+                                    egui::text::CCursorRange::one(egui::text::CCursor::new(
+                                        cursor_idx - 1,
+                                    )),
+                                ));
+                                new_state.store(ui.ctx(), response.id);
+                                tracing::debug!("Dialogue Assistance: Replaced -- with —");
+                            }
+                        }
+                    }
+                }
+            }
+
             tracing::debug!(
                 "markdown-editor.render_editor: TextEdit changed (content_len={}), has_focus={}",
                 self.content.len(),

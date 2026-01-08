@@ -1123,6 +1123,7 @@ name = "cosmarium-atmosphere"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "cosmarium-plugin-api",
  "dirs",
  "egui",
@@ -1132,6 +1133,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "serde_toon2",
  "strsim 0.11.1",
  "tokenizers",
  "tracing",

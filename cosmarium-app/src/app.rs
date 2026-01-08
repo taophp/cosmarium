@@ -520,6 +520,7 @@ impl Cosmarium {
         })?;
 
         self.current_project = Some(path.clone());
+        self.plugin_context.set_project_path(Some(path.clone()));
 
         // Load first document into editor (if any)
         let project_manager = Arc::clone(&self.core_app.project_manager());
@@ -636,6 +637,7 @@ impl Cosmarium {
         })?;
 
         self.current_project = Some(project_path.clone());
+        self.plugin_context.set_project_path(Some(project_path.clone()));
 
         // Update recent projects list
         let rt2 = tokio::runtime::Runtime::new()

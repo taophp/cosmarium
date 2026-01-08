@@ -141,6 +141,8 @@ impl PanelPlugin for MyPlugin {
 - [ ] Live markdown preview
 - [ ] Advanced syntax highlighting
 - [ ] Writing goals and session tracking
+- [ ] Dialogue Assistance (Auto-replace `--` with em-dash `—`)
+- [ ] Persistent Plugin Data (Atmosphere cache, user preferences)
 - [ ] Multiple themes and customization
 - [ ] Export to PDF/HTML/Word
 

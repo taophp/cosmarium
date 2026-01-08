@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 use tokenizers::Tokenizer;
 use tract_onnx::prelude::*;
@@ -14,7 +15,7 @@ const EMOTION_LABELS: [&str; 28] = [
 ];
 
 /// Emotion detection result
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmotionResult {
     pub emotion: String,
     pub score: f32,

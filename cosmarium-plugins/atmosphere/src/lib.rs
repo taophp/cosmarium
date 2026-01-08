@@ -1,4 +1,5 @@
 use cosmarium_plugin_api::{Plugin, PluginContext, PluginInfo, PluginType, Result};
+use async_trait::async_trait;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -22,6 +23,24 @@ use std::num::NonZeroUsize;
 use std::hash::{Hash, Hasher};
 #[cfg(feature = "ml-emotions")]
 use strsim::levenshtein;
+use serde::{Serialize, Deserialize};
+
+#[cfg(feature = "ml-emotions")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ParagraphAnalysis {
+    pub sentiment: f32,
+    pub emotions: Vec<EmotionResult>,
+    pub palette: Option<AtmospherePalette>,
+}
+
+#[cfg(feature = "ml-emotions")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ParagraphAnalysisPersistence {
+    pub hash: String,
+    pub sentiment: String,
+    pub emotions_json: String,
+    pub palette_json: String,
+}
 
 pub struct AtmospherePlugin {
     /// Current sentiment score (-1.0 to 1.0)
@@ -53,14 +72,17 @@ pub struct AtmospherePlugin {
     
     // -- Optimization fields --
     #[cfg(feature = "ml-emotions")]
-    /// Cache of paragraph sentiments keyed by content hash (sentiment, top_emotions, palette)
-    paragraph_cache: LruCache<u64, (f32, Vec<EmotionResult>, Option<AtmospherePalette>)>,
+    /// Cache of paragraph sentiments keyed by content hash
+    paragraph_cache: LruCache<u64, ParagraphAnalysis>,
     #[cfg(feature = "ml-emotions")]
     /// Content of the current paragraph during last analysis (for diffing)
     last_analyzed_paragraph: String,
     #[cfg(feature = "ml-emotions")]
     /// Hash of the paragraph currently being analyzed in background
     currently_analyzing_hash: Option<u64>,
+    #[cfg(feature = "ml-emotions")]
+    /// Last project path seen (to detect changes and load/save cache)
+    last_project_path: Option<std::path::PathBuf>,
 }
 
 impl Default for AtmospherePlugin {
@@ -89,6 +111,8 @@ impl Default for AtmospherePlugin {
             last_analyzed_paragraph: String::new(),
             #[cfg(feature = "ml-emotions")]
             currently_analyzing_hash: None,
+            #[cfg(feature = "ml-emotions")]
+            last_project_path: None,
         }
     }
 }
@@ -141,11 +165,87 @@ impl AtmospherePlugin {
                 
                 // Update cache with result using the hash from when we started the analysis
                 if let Some(hash) = self.currently_analyzing_hash.take() {
-                    self.paragraph_cache.put(hash, (sentiment, emotions, Some(palette)));
+                    self.paragraph_cache.put(hash, ParagraphAnalysis {
+                        sentiment,
+                        emotions: emotions.clone(),
+                        palette: Some(palette.clone()),
+                    });
                     tracing::debug!("Atmosphere result cached for hash: {}", hash);
                 }
                 
                 tracing::debug!("Applied ML sentiment: {}", sentiment);
+
+                // Auto-save cache occasionally (every result application is a good hook)
+                self.save_cache();
+            }
+        }
+    }
+
+    #[cfg(feature = "ml-emotions")]
+    /// Load paragraph cache from project metadata
+    fn load_cache(&mut self, project_path: &std::path::Path) {
+        let cache_file = project_path.join("meta/plugins/atmosphere/cache.toon");
+        if cache_file.exists() {
+            match std::fs::read_to_string(&cache_file) {
+                Ok(content) => {
+                    match serde_toon2::from_str::<Vec<ParagraphAnalysisPersistence>>(&content) {
+                        Ok(items) => {
+                            let count = items.len();
+                            for entry in items {
+                                if let Ok(hash) = u64::from_str_radix(&entry.hash, 16) {
+                                    let sentiment = entry.sentiment.parse::<f32>().unwrap_or(0.0);
+                                    let emotions = serde_json::from_str(&entry.emotions_json).unwrap_or_default();
+                                    let palette = serde_json::from_str(&entry.palette_json).ok();
+                                    
+                                    self.paragraph_cache.put(hash, ParagraphAnalysis {
+                                        sentiment,
+                                        emotions,
+                                        palette,
+                                    });
+                                }
+                            }
+                            tracing::info!("✓ Loaded {} entries from persistent atmosphere cache", count);
+                        }
+                        Err(e) => tracing::warn!("Failed to deserialize atmosphere cache: {}", e),
+                    }
+                }
+                Err(e) => tracing::warn!("Failed to read atmosphere cache file: {}", e),
+            }
+        }
+    }
+
+    #[cfg(feature = "ml-emotions")]
+    /// Save paragraph cache to project metadata
+    fn save_cache(&self) {
+        if let Some(ref project_path) = self.last_project_path {
+            let plugin_dir = project_path.join("meta/plugins/atmosphere");
+            tracing::info!("Atmosphere: Saving cache to {:?}", plugin_dir);
+            if let Err(e) = std::fs::create_dir_all(&plugin_dir) {
+                tracing::error!("Failed to create atmosphere plugin directory: {}", e);
+                return;
+            }
+
+            let cache_file = plugin_dir.join("cache.toon");
+            // Convert LRU cache to a serializable vector of safe persistent entries
+            let mut items = Vec::new();
+            for (hash, data) in self.paragraph_cache.iter() {
+                items.push(ParagraphAnalysisPersistence {
+                    hash: format!("{:x}", hash),
+                    sentiment: format!("{:.4}", data.sentiment),
+                    emotions_json: serde_json::to_string(&data.emotions).unwrap_or_else(|_| "[]".to_string()),
+                    palette_json: serde_json::to_string(&data.palette).unwrap_or_else(|_| "null".to_string()),
+                });
+            }
+
+            match serde_toon2::to_string(&items) {
+                Ok(content) => {
+                    if let Err(e) = std::fs::write(&cache_file, content) {
+                        tracing::error!("Failed to write atmosphere cache: {}", e);
+                    } else {
+                        tracing::debug!("Atmosphere cache saved ({} entries)", items.len());
+                    }
+                }
+                Err(e) => tracing::error!("Failed to serialize atmosphere cache: {}", e),
             }
         }
     }
@@ -231,11 +331,51 @@ impl AtmospherePlugin {
 
     #[cfg(feature = "ml-emotions")]
     // Helper to get paragraph bounds and content using byte indices
+    // Dialogue discovery: If the paragraph starts with a dialogue marker, 
+    // it will try to swallow contiguous dialogue paragraphs for a stable "scene" context.
     fn get_current_paragraph(content: &str, cursor_byte_idx: usize) -> (usize, usize, &str) {
         let cursor_byte_idx = cursor_byte_idx.min(content.len());
         
-        let start = content[..cursor_byte_idx].rfind("\n\n").map(|i| i + 2).unwrap_or(0);
-        let end = content[cursor_byte_idx..].find("\n\n").map(|i| cursor_byte_idx + i).unwrap_or(content.len());
+        // Helper to check for dialogue marker at start
+        let is_dialogue = |p_text: &str| -> bool {
+            let t = p_text.trim_start();
+            t.starts_with('-') || t.starts_with('—') || t.starts_with('–')
+        };
+        
+        let mut start = content[..cursor_byte_idx].rfind("\n\n").map(|i| i + 2).unwrap_or(0);
+        let mut end = content[cursor_byte_idx..].find("\n\n").map(|i| cursor_byte_idx + i).unwrap_or(content.len());
+        
+        let current_p = &content[start..end];
+        
+        // If current paragraph is dialogue, expand context to include surrounding dialogue paragraphs
+        if is_dialogue(current_p) {
+            // Expand upwards (max 2)
+            for _ in 0..2 {
+                if start <= 2 { break; }
+                let check_before = &content[..start - 2];
+                let prev_start = check_before.rfind("\n\n").map(|i| i + 2).unwrap_or(0);
+                let prev_p = &content[prev_start..start - 2];
+                if is_dialogue(prev_p) {
+                    start = prev_start;
+                } else {
+                    break;
+                }
+            }
+            
+            // Expand downwards (max 2)
+            for _ in 0..2 {
+                if end + 2 >= content.len() { break; }
+                let check_after = &content[end + 2..];
+                let next_end_rel = check_after.find("\n\n").unwrap_or(check_after.len());
+                let next_end = end + 2 + next_end_rel;
+                let next_p = &content[end + 2..next_end];
+                if is_dialogue(next_p) {
+                    end = next_end;
+                } else {
+                    break;
+                }
+            }
+        }
         
         // Trim boundaries for stability
         let slice = &content[start..end];
@@ -263,9 +403,27 @@ impl AtmospherePlugin {
         prev_p_content.hash(&mut hasher);
         let hash = hasher.finish();
 
-        self.paragraph_cache.get(&hash).map(|(s, e, p)| {
-            let intensity = e.iter().map(|er| er.score).fold(0.0_f32, f32::max);
-            (*s, intensity, p.clone())
+        self.paragraph_cache.get(&hash).map(|analysis| {
+            let intensity = analysis.emotions.iter().map(|er| er.score).fold(0.0_f32, f32::max);
+            (analysis.sentiment, intensity, analysis.palette.clone())
+        })
+    }
+
+    #[cfg(feature = "ml-emotions")]
+    fn get_next_paragraph_sentiment(&mut self, content: &str, current_end: usize) -> Option<(f32, f32, Option<AtmospherePalette>)> {
+        if current_end >= content.len() { return None; }
+        
+        let (_, _, next_p_content) = Self::get_current_paragraph(content, current_end + 1);
+        
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        next_p_content.hash(&mut hasher);
+        let hash = hasher.finish();
+
+        self.paragraph_cache.get(&hash).map(|analysis| {
+            let intensity = analysis.emotions.iter().map(|er| er.score).fold(0.0_f32, f32::max);
+            (analysis.sentiment, intensity, analysis.palette.clone())
         })
     }
 
@@ -352,6 +510,7 @@ impl AtmospherePlugin {
     }
 }
 
+#[async_trait]
 impl Plugin for AtmospherePlugin {
     // ... (info, initialize, plugin_type same as before)
     fn info(&self) -> PluginInfo {
@@ -374,7 +533,21 @@ impl Plugin for AtmospherePlugin {
 
     fn update(&mut self, ctx: &mut PluginContext) -> Result<()> {
         #[cfg(feature = "ml-emotions")]
-        self.check_pending_analysis();
+        {
+            // 0. Update project path tracking and load cache if needed
+            if let Some(current_path) = ctx.project_path() {
+                if self.last_project_path.as_ref() != Some(&current_path) {
+                    tracing::info!("Atmosphere: Project changed to {:?}, loading cache...", current_path);
+                    self.load_cache(&current_path);
+                    self.last_project_path = Some(current_path);
+                }
+            } else if self.last_project_path.is_some() {
+                tracing::debug!("Atmosphere: Project closed, clearing path tracker");
+                self.last_project_path = None;
+            }
+
+            self.check_pending_analysis();
+        }
 
         if let Some(content) = ctx.get_shared_state::<String>("markdown_editor_content") {
             let cursor_idx = ctx
@@ -393,7 +566,7 @@ impl Plugin for AtmospherePlugin {
                     .map(|(i, _)| i)
                     .unwrap_or(content.len());
 
-                let (p_start, _, p_content) = Self::get_current_paragraph(&content, cursor_byte_idx);
+                let (p_start, p_end, p_content) = Self::get_current_paragraph(&content, cursor_byte_idx);
                 
                 // 1. Navigation Caching
                 use std::collections::hash_map::DefaultHasher;
@@ -401,28 +574,39 @@ impl Plugin for AtmospherePlugin {
                 p_content.hash(&mut hasher);
                 let p_hash = hasher.finish();
                 
-                if let Some((cached_sentiment, cached_emotions, cached_palette)) = self.paragraph_cache.get(&p_hash) {
+                if let Some(analysis) = self.paragraph_cache.get(&p_hash) {
                     tracing::debug!("Atmosphere Cache HIT for paragraph hash: {}", p_hash);
-                    self.sentiment = *cached_sentiment;
-                    self.last_emotions = cached_emotions.clone();
-                    self.last_intensity = cached_emotions.iter().map(|e| e.score).fold(0.0_f32, f32::max);
-                    self.current_palette = cached_palette.clone();
+                    self.sentiment = analysis.sentiment;
+                    self.last_emotions = analysis.emotions.clone();
+                    self.last_intensity = analysis.emotions.iter().map(|e| e.score).fold(0.0_f32, f32::max);
+                    self.current_palette = analysis.palette.clone();
                     
                     // Update tracked content to match the cache hit (ensures stability when starting to edit)
                     self.last_analyzed_paragraph = p_content.to_string();
                 } else if p_content.len() < 50 {
-                    // 2. Inheritance (Short new paragraphs)
-                    // If we don't have a cache hit but paragraph is short, strictly inherit and skip analysis
-                    if let Some((prev_sentiment, prev_intensity, prev_palette)) = self.get_previous_paragraph_sentiment(&content, p_start) {
-                        tracing::debug!("Inheriting sentiment from previous paragraph (length {})", p_content.len());
-                        self.sentiment = prev_sentiment;
-                        self.last_intensity = prev_intensity;
-                        self.current_palette = prev_palette;
-                        // We reset last_analyzed_paragraph to empty so that when it reaches 50, it triggers immediately
-                        self.last_analyzed_paragraph = String::new();
-                    } else {
-                        // If no previous paragraph, keep current sentiment or use neutral
+                    // 2. Bidirectional Inheritance (Short new paragraphs)
+                    let prev = self.get_previous_paragraph_sentiment(&content, p_start);
+                    let next = self.get_next_paragraph_sentiment(&content, p_end);
+                    
+                    match (prev, next) {
+                        (Some((ps, pi, pp)), Some((ns, ni, np))) => {
+                            tracing::debug!("Averaging sentiment from prev/next paragraphs (length {})", p_content.len());
+                            self.sentiment = (ps + ns) / 2.0;
+                            self.last_intensity = (pi + ni) / 2.0;
+                            // For palette, take the previous one as it's more likely to be the "scene start"
+                            self.current_palette = pp.or(np);
+                        }
+                        (Some((s, i, p)), None) | (None, Some((s, i, p))) => {
+                            tracing::debug!("Inheriting sentiment from neighbor paragraph (length {})", p_content.len());
+                            self.sentiment = s;
+                            self.last_intensity = i;
+                            self.current_palette = p;
+                        }
+                        (None, None) => {
+                            // Keep current or defaults
+                        }
                     }
+                    self.last_analyzed_paragraph = String::new();
                 } else {
                     // 3. Editing Threshold (Only for paragraphs >= 50 chars)
                     // If the hash changed (cache miss), check if it's worth re-analyzing
@@ -493,6 +677,13 @@ impl Plugin for AtmospherePlugin {
             ctx.set_shared_state("atmosphere_emotions", compat_emotions);
         }
 
+        Ok(())
+    }
+
+    async fn shutdown(&mut self, ctx: &mut PluginContext) -> Result<()> {
+        let _ = ctx;
+        #[cfg(feature = "ml-emotions")]
+        self.save_cache();
         Ok(())
     }
 }

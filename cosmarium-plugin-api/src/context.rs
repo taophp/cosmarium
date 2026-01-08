@@ -46,6 +46,8 @@ pub struct PluginContext {
     config: HashMap<String, serde_json::Value>,
     /// Plugin-specific data storage
     plugin_data: HashMap<String, HashMap<String, Box<dyn Any + Send + Sync>>>,
+    /// Path to the currently active project (if any)
+    project_path: Arc<RwLock<Option<std::path::PathBuf>>>,
 }
 
 impl PluginContext {
@@ -64,6 +66,7 @@ impl PluginContext {
             event_handlers: HashMap::new(),
             config: HashMap::new(),
             plugin_data: HashMap::new(),
+            project_path: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -244,6 +247,18 @@ impl PluginContext {
     /// to perform more complex state operations or share state handles.
     pub fn shared_state(&self) -> Arc<RwLock<SharedState>> {
         Arc::clone(&self.shared_state)
+    }
+
+    /// Set the currently active project path.
+    pub fn set_project_path(&self, path: Option<std::path::PathBuf>) {
+        if let Ok(mut lock) = self.project_path.write() {
+            *lock = path;
+        }
+    }
+
+    /// Get the currently active project path.
+    pub fn project_path(&self) -> Option<std::path::PathBuf> {
+        self.project_path.read().ok().and_then(|lock| lock.clone())
     }
 }
 
