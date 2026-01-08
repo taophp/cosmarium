@@ -277,6 +277,9 @@ impl EditorCore {
                     let new_range = egui::text::CCursorRange::one(new_cursor);
                     state.cursor.set_char_range(Some(new_range));
                     state.store(ui.ctx(), response.id);
+                    
+                    // Apply dialogue replacements after manual insertion
+                    self.apply_dialogue_replacements(ui, response.id);
 
                     // Force repaint to show changes
                     ui.ctx().request_repaint();
@@ -338,36 +341,7 @@ impl EditorCore {
         // Handle content changes
         if response.changed() {
             // Dialogue Assistance: Replace -- with — (em-dash)
-            if let Some(state) = egui::TextEdit::load_state(ui.ctx(), response.id) {
-                if let Some(range) = state.cursor.char_range() {
-                    let cursor_idx = range.primary.index;
-                    if cursor_idx >= 2 {
-                        // Check the two characters exactly before the cursor
-                        let text_near_cursor: String =
-                            self.content.chars().skip(cursor_idx - 2).take(2).collect();
-                        if text_near_cursor == "--" {
-                            // Find byte indices for replacement
-                            let mut char_indices = self.content.char_indices();
-                            let start_byte = char_indices.nth(cursor_idx - 2).map(|(i, _)| i);
-                            let end_byte = char_indices.nth(1).map(|(i, _)| i); // .nth(1) because we already consumed up to cursor_idx - 2
-
-                            if let (Some(start), Some(end)) = (start_byte, end_byte) {
-                                self.content.replace_range(start..end, "—");
-
-                                // Adjust cursor: since 2 chars became 1, moved back by 1
-                                let mut new_state = state.clone();
-                                new_state.cursor.set_char_range(Some(
-                                    egui::text::CCursorRange::one(egui::text::CCursor::new(
-                                        cursor_idx - 1,
-                                    )),
-                                ));
-                                new_state.store(ui.ctx(), response.id);
-                                tracing::debug!("Dialogue Assistance: Replaced -- with —");
-                            }
-                        }
-                    }
-                }
-            }
+            self.apply_dialogue_replacements(ui, response.id);
 
             tracing::debug!(
                 "markdown-editor.render_editor: TextEdit changed (content_len={}), has_focus={}",
@@ -436,6 +410,47 @@ impl EditorCore {
     /// Update writing statistics based on current content
     fn update_stats(&mut self) {
         self.stats.update(&self.content);
+    }
+
+    /// Dialogue Assistance: Replace -- followed by a space with — (em-dash) followed by a space
+    fn apply_dialogue_replacements(&mut self, ui: &mut egui::Ui, id: egui::Id) {
+        if let Some(state) = egui::TextEdit::load_state(ui.ctx(), id) {
+            if let Some(range) = state.cursor.char_range() {
+                let cursor_idx = range.primary.index;
+                if cursor_idx >= 3 {
+                    // Check the three characters exactly before the cursor: "-- "
+                    let text_near_cursor: String =
+                        self.content.chars().skip(cursor_idx - 3).take(3).collect();
+                    if text_near_cursor == "-- " {
+                        // Find byte indices for replacement
+                        // We want to replace the first two characters (the dashes) while keeping the space
+                        let start_byte = self.content
+                            .char_indices()
+                            .nth(cursor_idx - 3)
+                            .map(|(i, _)| i);
+                        let end_dash_byte = self.content
+                            .char_indices()
+                            .nth(cursor_idx - 1)
+                            .map(|(i, _)| i);
+
+                        if let (Some(start), Some(end_dash)) = (start_byte, end_dash_byte) {
+                            // Replace the two dashes with one em-dash
+                            self.content.replace_range(start..end_dash, "—");
+
+                            // Adjust cursor: since 2 chars became 1, moved back by 1
+                            let mut new_state = state.clone();
+                            new_state.cursor.set_char_range(Some(
+                                egui::text::CCursorRange::one(egui::text::CCursor::new(
+                                    cursor_idx - 1,
+                                )),
+                            ));
+                            new_state.store(ui.ctx(), id);
+                            tracing::debug!("Dialogue Assistance: Replaced -- with — (triggered by space)");
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Get dynamic title based on cursor position
