@@ -78,32 +78,44 @@ impl RybWheel {
         h00 * y0 + h10 * d0 * (x1 - x0) + h01 * y1 + h11 * d1 * (x1 - x0)
     }
 
-    /// Main RYB rotation using continuous spline mapping
-    /// Input hue 'h' is standard HSL (0-360)
-    /// 'amount' is rotation in RYB space (0-360)
-    /// Returns new HSL hue (0-360)
-    pub fn spin(h: f32, amount: f32) -> f32 {
+    /// Forward transform: HSL -> RYB
+    pub fn hsl_to_ryb(h: f32) -> f32 {
         let wheel = [
             (0.0, 0.0), (22.0, 30.0), (33.0, 60.0), (47.0, 90.0),
             (60.0, 120.0), (78.0, 150.0), (120.0, 180.0),
             (192.0, 210.0), (240.0, 240.0), (360.0, 360.0)
         ];
-
         let xs: Vec<f32> = wheel.iter().map(|(hsl, _)| *hsl).collect();
         let ys: Vec<f32> = wheel.iter().map(|(_, ryb)| *ryb).collect();
-
-        // Normalize input
         let h = ((h % 360.0) + 360.0) % 360.0;
+        Self::spline_interp(h, &xs, &ys)
+    }
 
-        // Forward transform (HSL -> RYB)
-        let ryb = Self::spline_interp(h, &xs, &ys);
+    /// Inverse transform: RYB -> HSL
+    pub fn ryb_to_hsl(ryb: f32) -> f32 {
+        let wheel = [
+            (0.0, 0.0), (22.0, 30.0), (33.0, 60.0), (47.0, 90.0),
+            (60.0, 120.0), (78.0, 150.0), (120.0, 180.0),
+            (192.0, 210.0), (240.0, 240.0), (360.0, 360.0)
+        ];
+        let xs: Vec<f32> = wheel.iter().map(|(_, ryb)| *ryb).collect();
+        let ys: Vec<f32> = wheel.iter().map(|(hsl, _)| *hsl).collect();
+        let ryb = ((ryb % 360.0) + 360.0) % 360.0;
+        Self::spline_interp(ryb, &xs, &ys)
+    }
 
-        // Apply rotation in RYB space
-        let new_ryb = (ryb + amount + 360.0) % 360.0;
-
-        // Inverse transform (RYB -> HSL)
-        // Note: we swap xs and ys for inverse lookup
-        Self::spline_interp(new_ryb, &ys, &xs)
+    /// Main RYB rotation using continuous spline mapping
+    /// Input hue 'h' is standard HSL (0-360)
+    /// 'amount' is rotation in RYB space (0-360)
+    /// Returns new HSL hue (0-360)
+    pub fn spin(h: f32, amount: f32) -> f32 {
+        let ryb = Self::hsl_to_ryb(h);
+        
+        // Rotate in RYB space
+        let ryb_new = (ryb + amount) % 360.0;
+        
+        // Transform back (Inverse)
+        Self::ryb_to_hsl(ryb_new)
     }
 
     /// Get a human-readable name for a RYB hue

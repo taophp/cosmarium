@@ -31,6 +31,7 @@ pub struct ParagraphAnalysis {
     pub sentiment: f32,
     pub emotions: Vec<EmotionResult>,
     pub palette: Option<AtmospherePalette>,
+    pub override_palette: Option<AtmospherePalette>,
 }
 
 #[cfg(feature = "ml-emotions")]
@@ -40,6 +41,7 @@ pub struct ParagraphAnalysisPersistence {
     pub sentiment: String,
     pub emotions_json: String,
     pub palette_json: String,
+    pub override_palette_json: Option<String>,
 }
 
 pub struct AtmospherePlugin {
@@ -169,6 +171,7 @@ impl AtmospherePlugin {
                         sentiment,
                         emotions: emotions.clone(),
                         palette: Some(palette.clone()),
+                        override_palette: None,
                     });
                     tracing::debug!("Atmosphere result cached for hash: {}", hash);
                 }
@@ -196,11 +199,14 @@ impl AtmospherePlugin {
                                     let sentiment = entry.sentiment.parse::<f32>().unwrap_or(0.0);
                                     let emotions = serde_json::from_str(&entry.emotions_json).unwrap_or_default();
                                     let palette = serde_json::from_str(&entry.palette_json).ok();
+                                    let override_palette = entry.override_palette_json.as_ref()
+                                        .and_then(|json| serde_json::from_str(json).ok());
                                     
                                     self.paragraph_cache.put(hash, ParagraphAnalysis {
                                         sentiment,
                                         emotions,
                                         palette,
+                                        override_palette,
                                     });
                                 }
                             }
@@ -234,6 +240,8 @@ impl AtmospherePlugin {
                     sentiment: format!("{:.4}", data.sentiment),
                     emotions_json: serde_json::to_string(&data.emotions).unwrap_or_else(|_| "[]".to_string()),
                     palette_json: serde_json::to_string(&data.palette).unwrap_or_else(|_| "null".to_string()),
+                    override_palette_json: data.override_palette.as_ref()
+                        .and_then(|p| serde_json::to_string(p).ok()),
                 });
             }
 
@@ -574,12 +582,51 @@ impl Plugin for AtmospherePlugin {
                 p_content.hash(&mut hasher);
                 let p_hash = hasher.finish();
                 
+                // Publish current paragraph hash for UI coordination (e.g. manual override)
+                ctx.set_shared_state("atmosphere_paragraph_hash", p_hash);
+
+                // 0. Handle manual override requests from UI
+                if let Some(manual_palette) = ctx.get_shared_state::<AtmospherePalette>("atmosphere_manual_palette_request") {
+                    tracing::info!("Atmosphere: Manual palette override requested for paragraph {}", p_hash);
+                    
+                    // Update cache with override
+                    let mut analysis = self.paragraph_cache.get(&p_hash).cloned().unwrap_or_else(|| ParagraphAnalysis {
+                        sentiment: 0.0,
+                        emotions: Vec::new(),
+                        palette: None,
+                        override_palette: None,
+                    });
+                    
+                    analysis.override_palette = Some(manual_palette.clone());
+                    self.paragraph_cache.put(p_hash, analysis);
+                    
+                    // Apply immediately
+                    self.current_palette = Some(manual_palette);
+                    
+                    // Clear the request
+                    ctx.set_shared_state::<Option<AtmospherePalette>>("atmosphere_manual_palette_request", None);
+                    
+                    // Save cache
+                    self.save_cache();
+                }
+
+                // Handle clear manual override request
+                if ctx.get_shared_state::<bool>("atmosphere_clear_manual_request").unwrap_or(false) {
+                    tracing::info!("Atmosphere: Clearing manual override for paragraph {}", p_hash);
+                    if let Some(analysis) = self.paragraph_cache.get_mut(&p_hash) {
+                        analysis.override_palette = None;
+                        self.current_palette = analysis.palette.clone();
+                    }
+                    ctx.set_shared_state("atmosphere_clear_manual_request", false);
+                    self.save_cache();
+                }
+
                 if let Some(analysis) = self.paragraph_cache.get(&p_hash) {
                     tracing::debug!("Atmosphere Cache HIT for paragraph hash: {}", p_hash);
                     self.sentiment = analysis.sentiment;
                     self.last_emotions = analysis.emotions.clone();
                     self.last_intensity = analysis.emotions.iter().map(|e| e.score).fold(0.0_f32, f32::max);
-                    self.current_palette = analysis.palette.clone();
+                    self.current_palette = analysis.override_palette.clone().or_else(|| analysis.palette.clone());
                     
                     // Update tracked content to match the cache hit (ensures stability when starting to edit)
                     self.last_analyzed_paragraph = p_content.to_string();

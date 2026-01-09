@@ -5,6 +5,7 @@
 //! layout management, and core application functionality.
 
 use crate::AppArgs;
+use cosmarium_atmosphere::color::{AtmospherePalette, Harmony, RybWheel};
 use cosmarium_atmosphere::AtmospherePlugin;
 use cosmarium_core::Session;
 use cosmarium_core::{Application, Config, Layout, LayoutManager, PluginManager, Result};
@@ -104,6 +105,10 @@ struct UiState {
     current_theme: String,
     /// Currently active panel in the left sidebar
     active_left_panel: Option<String>,
+    /// Whether to show the atmosphere color picker
+    show_atmosphere_picker: bool,
+    /// The current color in the picker
+    atmosphere_picker_color: egui::Color32,
 }
 
 impl Default for UiState {
@@ -120,6 +125,8 @@ impl Default for UiState {
             hovered_menu: None,
             active_menu: None,
             current_theme: "Dark".to_string(),
+            show_atmosphere_picker: false,
+            atmosphere_picker_color: egui::Color32::from_gray(128),
         }
     }
 }
@@ -1139,10 +1146,65 @@ impl Cosmarium {
 
                     // Color square using the current theme background
                     let color = ui.visuals().panel_fill;
-
-                    let (rect, response) = ui.allocate_at_least(egui::vec2(12.0, 12.0), egui::Sense::hover());
+                    
+                    let (rect, response) = ui.allocate_at_least(egui::vec2(12.0, 12.0), egui::Sense::click());
                     ui.painter().rect_filled(rect, 2.0, color);
                     ui.painter().rect_stroke(rect, 2.0, egui::Stroke::new(1.0, egui::Color32::from_gray(128)), egui::StrokeKind::Outside);
+
+                    let popup_id = ui.make_persistent_id("atmosphere_color_picker_popup");
+                    if response.clicked() {
+                        self.ui_state.show_atmosphere_picker = !self.ui_state.show_atmosphere_picker;
+                    }
+
+                    if self.ui_state.show_atmosphere_picker {
+                        let pos = response.rect.left_bottom();
+                        egui::Area::new(popup_id)
+                            .order(egui::Order::Foreground)
+                            .fixed_pos(pos)
+                            .constrain(true)
+                            .show(ui.ctx(), |ui| {
+                                let frame_response = egui::Frame::popup(ui.style()).show(ui, |ui| {
+                                    ui.set_min_width(300.0);
+                                    ui.vertical(|ui| {
+                                        ui.label("Climat Manuel :");
+                                        let mut picker_color = self.ui_state.atmosphere_picker_color;
+                                        if egui::color_picker::color_picker_color32(ui, &mut picker_color, egui::color_picker::Alpha::Opaque) {
+                                            self.ui_state.atmosphere_picker_color = picker_color;
+                                            
+                                            // Generate palette and send request
+                                            let hsv = egui::ecolor::Hsva::from(picker_color);
+                                            let h_hsl = hsv.h * 360.0;
+                                            let s_hsl = hsv.s * 100.0;
+                                            let l_hsl = hsv.v * 100.0;
+                                            
+                                            let h_ryb = RybWheel::hsl_to_ryb(h_hsl);
+                                            let palette = RybWheel::generate_palette(h_ryb, s_hsl, l_hsl, Harmony::Triad, 1.0);
+                                            
+                                            self.plugin_context.set_shared_state("atmosphere_manual_palette_request", palette);
+                                        }
+                                        
+                                        ui.add_space(4.0);
+                                        if ui.button("Réinitialiser (IA)").clicked() {
+                                            self.plugin_context.set_shared_state("atmosphere_clear_manual_request", true);
+                                            self.ui_state.show_atmosphere_picker = false;
+                                            // Restore focus to editor
+                                            self.plugin_context.set_shared_state("markdown_editor_focus_requested", true);
+                                        }
+                                    });
+                                }).response;
+
+                                // Robust click-outside detection:
+                                // If any click happened AND it wasn't on the popup AND it wasn't on the button itself...
+                                if ui.input(|i| i.pointer.any_click()) 
+                                   && !frame_response.hovered() 
+                                   && !response.hovered() 
+                                {
+                                    self.ui_state.show_atmosphere_picker = false;
+                                    // Restore focus to editor on close
+                                    self.plugin_context.set_shared_state("markdown_editor_focus_requested", true);
+                                }
+                            });
+                    }
 
                     if !emotions.is_empty() || p_idx > 0 {
                         response.on_hover_ui(|ui| {
